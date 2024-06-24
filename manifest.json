@@ -1,0 +1,49 @@
+{
+	"name": "wbhi-bids",
+	"label": "WBHI BIDS Gear",
+	"description": "",
+	"version": "0.1.0",
+	"author": "Joe Wexler",
+	"maintainer": "Joe Wexler",
+	"cite": "",
+	"license": "MIT",
+	"url": "",
+	"source": "",
+	"environment": {
+		"FLYWHEEL": "/flywheel/v0",
+		"PWD": "/flywheel/v0",
+		"HOME": "/root",
+		"LANG": "C.UTF-8",
+		"LC_ALL": "C.UTF-8",
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	},
+	"custom": {
+		"gear-builder": {
+			"category": "analysis",
+			"image": "jbwexler/wbhi-bids:0.1.0"
+		},
+		"flywheel": {
+			"suite": "WBHI"
+		}
+	},
+	"inputs": {
+		"key": {
+			"base": "api-key"
+		}
+	},
+	"config": {
+		"redcap_api_key": {
+			"description": "REDCap API key",
+			"type": "string"
+		},
+		"gmail_address": {
+			"description": "Address of gmail account to use for sending emails",
+			"type": "string"
+		},
+		"gmail_password": {
+			"description": "Password of gmail account to use for sending emails",
+			"type": "string"
+		}
+	},
+	"command": "python run.py"
+}

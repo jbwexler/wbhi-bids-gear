@@ -1,0 +1,5 @@
+flywheel-sdk
+flywheel_gear_toolkit
+pycap
+pandas
+git+https://github.com/poldracklab/wbhi-utils.git
