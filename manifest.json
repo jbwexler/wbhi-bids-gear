@@ -1,7 +1,7 @@
 {
 	"name": "wbhi-bids",
 	"label": "WBHI BIDS Gear",
-	"description": "",
+	"description": "Flywheel gear that prepares dataset to be bidsified and then submits bids-curate jobs to complete bidsification.",
 	"version": "0.1.0",
 	"author": "Joe Wexler",
 	"maintainer": "Joe Wexler",
