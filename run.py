@@ -36,6 +36,7 @@ DATAVIEW_COLUMNS = [
     'acquisition.id',
     'file.classification.Intent',
     'file.classification.Measurement',
+    'file.classification.Features',
     'file.file_id',
     'file.tags',
     'file.type',
@@ -88,18 +89,19 @@ def pydeface_filter(df: pd.DataFrame) -> bool:
     try:
         nii_df = df.copy()
         nii_df = nii_df[nii_df['file.type'] == 'nifti']
-        mask = nii_df['file.tags'].apply(lambda x: 'dcm2niix' not in x).any()
+        mask = nii_df['file.tags'].apply(lambda x: 'pydeface' not in x).any()
     except KeyError:
         return False
     return mask
 
-def get_subjects(project: ProjectOutput) -> list:
+def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     """Returns a list of subject IDs of subjects that have not yet been bidsified
     and are ready to be."""
 
     file_df = create_view_df(project, DATAVIEW_COLUMNS) 
     file_df = file_df[file_df['file.type'].isin(('dicom', 'nifti'))]
 
+    breakpoint()
     # Skip subject if all sessions have been bidsified
     file_df = file_df.groupby('subject.id').filter(
         lambda x: x['session.info.BIDS'].isna().any()
@@ -135,33 +137,48 @@ def get_subjects(project: ProjectOutput) -> list:
                     f"\n{filt_out_set}"
         )
 
-    return file_df['subject.id'].unique().tolist()
+    return file_df
 
 
-def get_acq_path(acq: AcquisitionListOutput) -> str:
-    """Takes an acquisition and returns its path:
-    project/subject/session/acquisition"""
-    project_label = client.get_project(acq.parents.project).label
-    sub_label = client.get_subject(acq.parents.subject).label
-    ses_label = client.get_session(acq.parents.session).label
+def classify(file_df: pd.DataFrame) -> pd.DataFrame:
+    """Determines which acquisitions should be bidsified and converts the acquisition labels
+    to repronim standard. For acquisitions that won't be bidsified, adds '_ignore_BIDS' to
+    the end of the acquisition label, signaling the bids-curate gear to skip."""
+    
+    def modality_filter(row: pd.Series) -> str:
+        measurement = row['file.classification.Measurement']
+        intent = row['file.classification.Intent']
 
-    return f"{project_label}/{sub_label}/{ses_label}/{acq.label}"
+        if measurement and 'Perfusion' in measurement:
+            return 'asl'
+        elif measurement and intent and 'Structural' in intent:
+            if 'T1' in row['file.classification.Measurement']:
+                return 'T1w'
+            elif 'T2' in row['file.classification.Measurement']:
+                return 'T2w'   
+            elif 'Diffusion' in row['file.classification.Measurement']:
+                return 'dwi'
+        elif (intent and 'Functional' in row['file.classification.Intent'] and
+            'rest' in row['acquisition.label']):
+            return 'rest'
+        elif intent and 'Fieldmap' in measurement:
+            return 'fmap'
 
-def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
-    """Get relevant fields from dicom header of an acquisition"""
-    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(f"File-classifier gear has not been run on {get_acq_path(acq)}")
-        return {"error": "FILE_CLASSIFIER_NOT_RUN"}
+    classified_df= file_df.copy()
+    classified_df = classified_df[classified_df['session.info.BIDS'].isna()]
 
-    dcm_hdr = dicom.reload().info["header"]["dicom"]
-    return {
-        "error": None,
-        "site": site,
-        "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
-        "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
-        "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
-    }
+    modality_series = classified_df.apply(modality_filter, axis=1)
+    if not modality_series.empty:
+        classified_df['modality'] = modality_series
+
+    return classified_df
+
+def add_repronim(file_df: pd.DataFrame) -> pd.DataFrame:
+    repronim_df = file_df.copy()
+
+    for ses_id, ses_df in repronim_df.groupby('session.id'):
+        
+        breakpoint()
 
 def send_email(subject, html_content, sender, recipients, password):
     msg = MIMEMultipart()
@@ -197,12 +214,16 @@ def main():
     gtk_context.init_logging()
     gtk_context.log_config()
 
-    deid_project = client.lookup("wbhi/deid")
+    deid_project = client.lookup("joe_test/deid_joe")
+    #deid_project = client.lookup("wbhi/deid")
     try:
-        sub_list = get_subjects(deid_project)
+        file_df = get_subjects(deid_project)
     except (KeyError, NameError):
         log.info("All sessions have already been bidsified. Exiting")
         sys.exit(0)
+
+    file_df = classify(file_df)
+    file_df = add_repronim(file_df)
 
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
