@@ -41,7 +41,8 @@ DATAVIEW_COLUMNS = [
     'file.tags',
     'file.type',
     'file.created',
-    'file.name'
+    'file.name',
+    'acquisition.timestamp'
 ]
 
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
@@ -100,8 +101,7 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
 
     file_df = create_view_df(project, DATAVIEW_COLUMNS) 
     file_df = file_df[file_df['file.type'].isin(('dicom', 'nifti'))]
-
-    breakpoint()
+    
     # Skip subject if all sessions have been bidsified
     file_df = file_df.groupby('subject.id').filter(
         lambda x: x['session.info.BIDS'].isna().any()
@@ -117,19 +117,9 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     file_df = file_df[~file_df['file.name'].isnull()]
     file_df['file.name'] = file_df['file.name'].str.replace('_', '.')
     file_df['file_root'] = file_df['file.name'].apply(
-        lambda x: x.split('.dicom')[0]
+        lambda x: x.split('.dicom')[0].split('.dcm')[0]
     )
-
-    # Skips subjects if not all dicoms have corresponding niftis
-    filenames_joined = ','.join(file_df[file_df['file.type'] == 'nifti']['file.name'].tolist())
-    dcm_df = file_df.copy()
-    dcm_df = dcm_df[dcm_df['file.type'] == 'dicom'].groupby('subject.id').filter(
-        lambda x: x['file_root'].apply(
-            lambda y: y in filenames_joined
-        ).all()
-    )
-    file_df = file_df[file_df['subject.id'].isin(dcm_df['subject.id'])]
-
+    
     # Raise warning if some non-bidsified sessions are filtered out
     filt_out_set = set(nonbids_df['subject.id']) - set(file_df['subject.id'])
     if filt_out_set:
@@ -145,40 +135,86 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     to repronim standard. For acquisitions that won't be bidsified, adds '_ignore_BIDS' to
     the end of the acquisition label, signaling the bids-curate gear to skip."""
     
-    def modality_filter(row: pd.Series) -> str:
+    def reproin_filter(row: pd.Series) -> str:
         measurement = row['file.classification.Measurement']
         intent = row['file.classification.Intent']
+        label = row['acquisition.label']
 
-        if measurement and 'Perfusion' in measurement:
+        if 'bids-gear-ignore'in row['file.tags']:
+            # Above tag can be used to mark files that can't be niftified and should be ignored
+            return None
+        elif measurement and 'Perfusion' in measurement:
             return 'asl'
         elif measurement and intent and 'Structural' in intent:
-            if 'T1' in row['file.classification.Measurement']:
-                return 'T1w'
-            elif 'T2' in row['file.classification.Measurement']:
-                return 'T2w'   
-            elif 'Diffusion' in row['file.classification.Measurement']:
+            if 'T1' in measurement:
+                return 'anat-T1w'
+            elif 'T2' in measurement:
+                return 'anat-T2w'   
+            elif 'Diffusion' in measurement:
                 return 'dwi'
-        elif (intent and 'Functional' in row['file.classification.Intent'] and
-            'rest' in row['acquisition.label']):
-            return 'rest'
-        elif intent and 'Fieldmap' in measurement:
+        elif (intent and 'Functional' in intent and
+            label and 'rest' in label):
+            return 'func_task-rest'
+        elif measurement and 'Fieldmap' in measurement:
             return 'fmap'
+        else:
+            return label + '_ignore_BIDS'
 
-    classified_df= file_df.copy()
+    classified_df = file_df.copy()
     classified_df = classified_df[classified_df['session.info.BIDS'].isna()]
 
-    modality_series = classified_df.apply(modality_filter, axis=1)
-    if not modality_series.empty:
-        classified_df['modality'] = modality_series
+    reproin_series = classified_df.apply(reproin_filter, axis=1)
+    if not reproin_series.empty:
+        classified_df['reproin'] = reproin_series
+
+    # Remove subjects if any included acqs don't have corresponding niftis
+    filenames_joined = ','.join(classified_df[
+        classified_df['file.type'] == 'nifti']['file.name'].tolist())
+    bidsify_df = classified_df.copy()
+    bidsify_df = bidsify_df[~bidsify_df['reproin'].isna()]
+    bidsify_df = bidsify_df[bidsify_df['file.type'] == 'dicom'].groupby('subject.id').filter(
+        lambda x: x['file_root'].apply(
+            lambda y: y in filenames_joined
+        ).all()
+    )
+
+    filt_out_set = set(classified_df['subject.id']) - set(bidsify_df['subject.id'])
+    if filt_out_set:
+        log.warning("The following subjects are not yet bidsified and filtered out: "
+                    f"\n{filt_out_set}"
+        )
+    classified_df = classified_df[classified_df['subject.id'].isin(bidsify_df['subject.id'])]
 
     return classified_df
 
-def add_repronim(file_df: pd.DataFrame) -> pd.DataFrame:
-    repronim_df = file_df.copy()
+def add_repronim(classified_df: pd.DataFrame) -> pd.DataFrame:
+    repronim_df = classified_df.copy()
+    repronim_df = repronim_df[[
+        'subject.id',
+        'session.id',
+        'acquisition.id',
+        'acquisition.label',
+        'acquisition.timestamp',
+        'reproin'
+    ]]
+    # Produce a df with one row per acq
+    repronim_df = repronim_df.drop_duplicates()
 
-    for ses_id, ses_df in repronim_df.groupby('session.id'):
-        
-        breakpoint()
+    def add_run(df: pd.DataFrame()):
+        if df.shape[0] > 1:
+            df = df.sort_values(by='acquisition.timestamp')
+            n_digits = len(str(df.shape[0]))
+            padded_list = [str(n).zfill(n_digits) for n in range(1, df.shape[0] + 1)]
+            df.insert(df.shape[1], 'run', padded_list)
+            df['reproin'] = df['reproin'] + '_run-' + df['run']
+        return df
+
+    repronim_df = repronim_df.groupby(['session.id', 'reproin']).apply(add_run).reset_index(drop=True)
+
+    for i, row in repronim_df.iterrows():
+        acq = client.get_acquisition(row['acquisition.id'])
+        acq.update({'label': row['reproin']})
+
 
 def send_email(subject, html_content, sender, recipients, password):
     msg = MIMEMultipart()
@@ -210,10 +246,21 @@ def run_gear(
     except flywheel.rest.ApiException:
         log.exception('An exception was raised when attempting to submit a job for %s', gear.name)
 
+def test_validate():
+    from bids_curate.flywheel_bids.supporting_files.bidsify_flywheel import process_matching_templates
+    from bids_curate.flywheel_bids.supporting_files.templates import load_template
+
+    template = load_template(template_name='reproin')
+    session = client.get_session('66a92ea0d0c712d5593d5c08')
+    context = {"container_type": "session"}  
+    process_matching_templates(session, template)
+    breakpoint()
+
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
 
+    #test_validate()
     deid_project = client.lookup("joe_test/deid_joe")
     #deid_project = client.lookup("wbhi/deid")
     try:

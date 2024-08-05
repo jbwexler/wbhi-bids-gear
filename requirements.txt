@@ -2,4 +2,5 @@ flywheel-sdk
 flywheel_gear_toolkit
 pycap
 pandas
+rtstatlib
 git+https://github.com/poldracklab/wbhi-utils.git
