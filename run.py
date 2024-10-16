@@ -38,6 +38,7 @@ DATAVIEW_COLUMNS = [
     'session.info.BIDS',
     'acquisition.label',
     'acquisition.id',
+    'file.info.header.dicom.SeriesDescription',
     'file.classification.Intent',
     'file.classification.Measurement',
     'file.classification.Features',
@@ -49,6 +50,8 @@ DATAVIEW_COLUMNS = [
     'file.name',
     'acquisition.timestamp'
 ]
+
+ALLOWED_DATATYPES = ['func', 'anat', 'dwi', 'fmap', 'asl']
 
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
@@ -138,55 +141,60 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
 
     return file_df
 
+def reproin_filter(row: pd.Series) -> str:
+    label = row['acquisition.label']
+    if row['file.type'] != 'dicom':
+        return None
+    elif '_ignore-BIDS' in label:
+        return None
+    
+    # Utilize acq label if already in reproin format. Otherwise, create a reproin label.
+    label_re = re.sub(r'_\d$', '', label)
+    label_ignore = label + '_ignore-BIDS'
+    validator = parse_series_spec(label)
+
+    if validator:
+        if validator['datatype'] not in ALLOWED_DATATYPES:
+            return label_ignore
+        elif validator['datatype'] == 'func':
+            if 'task' in validator and ('rest' in validator['task'] or validator['task'] == 'rs'):
+                return re.sub('task-.*?(_|$)', r'task-rest\1', label_re)
+            else:
+                return label_ignore
+        return label_re
+    else:
+        measurement = row['file.classification.Measurement']
+        intent = row['file.classification.Intent']
+
+        if label.startswith('GOBRAIN_'):
+            return label_ignore
+        elif label == 't2_tse_tra_hi-res_hippocampus':
+            return 'anat-T2w_acq-hippocampus'
+        elif intent and 'Localizer' in intent:
+            return label_ignore
+        elif measurement and 'Perfusion' in measurement:
+            return 'asl'
+        elif measurement and intent and 'Structural' in intent:
+            if 'T1' in measurement:
+                return 'anat-T1w'
+            elif 'T2' in measurement:
+                return 'anat-T2w'   
+            elif 'Diffusion' in measurement:
+                return 'dwi'
+        elif (intent and 'Functional' in intent and label
+            and ('rest' in label.lower() or 'rsfmri' in label.lower())):
+            return 'func_task-rest'
+        elif intent and 'Fieldmap' in intent:
+            return 'fmap'
+        else:
+            return label_ignore
 
 def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     """Determines which acquisitions should be bidsified and converts the acquisition labels
     to repronim standard. For acquisitions that won't be bidsified, adds '_ignore-BIDS' to
     the end of the acquisition label, signaling the bids-curate gear to skip."""
 
-    def reproin_filter(row: pd.Series) -> str:
-        measurement = row['file.classification.Measurement']
-        intent = row['file.classification.Intent']
-        label = row['acquisition.label']
-        label = re.sub(r'_\d$', '', label)
-        
-        validator = parse_series_spec(label)
-        reproin = None
-
-        if 'bids-gear-ignore'in row['file.tags']:
-            # Above tag can be used to mark files that can't be niftified and should be ignored
-            return None
-        elif '_ignore-BIDS' in label:
-            return None
-        elif label.startswith('GOBRAIN_'):
-            return row['acquisition.label'] + '_ignore-BIDS'
-        elif intent and 'Localizer' in intent:
-            return row['acquisition.label'] + '_ignore-BIDS'
-        elif measurement and 'Perfusion' in measurement:
-            reproin = 'asl'
-        elif measurement and intent and 'Structural' in intent:
-            if 'T1' in measurement:
-                reproin = 'anat-T1w'
-            elif 'T2' in measurement:
-                reproin = 'anat-T2w'   
-            elif 'Diffusion' in measurement:
-                reproin = 'dwi'
-        elif (intent and 'Functional' in intent and
-            label and 'rest' in label.lower()):
-            reproin = 'func_task-rest'
-        elif intent and 'Fieldmap' in intent:
-            reproin = 'fmap'
-        
-        if reproin:
-            if validator:
-                return label
-            return reproin
-        
-        # Use the pre-regex acq-label to avoid duplicate filenames since runs won't be added
-        return row['acquisition.label'] + '_ignore-BIDS'
-
     classified_df = file_df.copy()
-    breakpoint()
     classified_df = classified_df[classified_df['session.tags'].apply(lambda x: 'bidsified' not in x)]
 
     reproin_series = classified_df.apply(reproin_filter, axis=1)
@@ -215,21 +223,12 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
                     f"\n{filt_out_set}"
         )
     classified_df = classified_df[classified_df['subject.id'].isin(bidsify_df['subject.id'])]
+    classified_df = classified_df[classified_df['file.type'] == 'dicom']
 
     return classified_df
 
 def add_repronim(classified_df: pd.DataFrame) -> pd.DataFrame:
     repronim_df = classified_df.copy()
-    repronim_df = repronim_df[[
-        'subject.id',
-        'session.id',
-        'acquisition.id',
-        'acquisition.label',
-        'acquisition.timestamp',
-        'reproin'
-    ]]
-    # Produce a df with one row per acq
-    repronim_df = repronim_df.drop_duplicates()
 
     def add_run(df: pd.DataFrame()):
         if df.shape[0] > 1:
@@ -237,10 +236,29 @@ def add_repronim(classified_df: pd.DataFrame) -> pd.DataFrame:
             n_digits = max(2, len(str(df.shape[0])))
             padded_list = [str(n).zfill(n_digits) for n in range(1, df.shape[0] + 1)]
             df.insert(df.shape[1], 'run', padded_list)
-            df['reproin'] = df['reproin'] + '_run-' + df['run']
+            if df['reproin'].iloc[[0]].str.startswith('fmap').item():
+                df['reproin'] = df['reproin'] + '_' + df['run']
+            else:
+                df['reproin'] = df['reproin'] + '_run-' + df['run']
         return df
 
     repronim_df = repronim_df.groupby(['session.id', 'reproin']).apply(add_run).reset_index(drop=True)
+
+    #####################
+    columns = [
+        'subject.label',
+        'reproin',
+        'file.info.header.dicom.SeriesDescription',
+        'file.classification.Intent',
+        'file.classification.Measurement',
+        'file.classification.Features',
+        'acquisition.timestamp',
+        'file.modality'
+    ]
+    output_path = gtk_context.output_dir.joinpath('reproin_dryrun.csv')
+    repronim_df[columns].to_csv(output_path)
+    breakpoint()
+    #####################
 
     for name, ses_df in repronim_df.groupby('session.id'):
         for i, row in ses_df.iterrows():
@@ -251,7 +269,6 @@ def add_repronim(classified_df: pd.DataFrame) -> pd.DataFrame:
                     acq_tmp.update({'label': row['reproin'] + '_tmp'})
                 acq = client.get_acquisition(row['acquisition.id'])
                 acq.update({'label': row['reproin']})
-            
     return repronim_df
 
 def rename_sessions(repronim_df: pd.DataFrame()) -> None:
@@ -276,7 +293,7 @@ def submit_bids_jobs(repronim_df: pd.DataFrame()):
     curate_bids_gear = client.lookup('gears/curate-bids')
     for sub_id in repronim_df['subject.id'].unique():
         subject = client.get_subject(sub_id)
-        run_gear(curate_bids_gear, {}, {}, subject)
+        run_gear(curate_bids_gear, {}, {'reset': True}, subject)
 
 def wait_for_jobs(project: ProjectOutput) -> None:
     query = f'parents.project={project.id},state=running,gear_info.name=curate-bids'
@@ -365,6 +382,7 @@ def main():
     file_df = classify(file_df)
     file_df = add_repronim(file_df)
     rename_sessions(file_df)
+    breakpoint()
     submit_bids_jobs(file_df)
     wait_for_jobs(deid_project)
     tag_and_email(deid_project)
