@@ -29,7 +29,7 @@ from wbhiutils.constants import (
 log = logging.getLogger(__name__)
 
 WAIT_TIMEOUT = 3600 * 2
-
+SBREF_DELTA = timedelta(seconds=30)
 DATAVIEW_COLUMNS = [
     'subject.id',
     'subject.label',
@@ -39,6 +39,7 @@ DATAVIEW_COLUMNS = [
     'acquisition.label',
     'acquisition.id',
     'file.info.header.dicom.SeriesDescription',
+    'file.info.header.dicom_array.ImageType.0',
     'file.classification.Intent',
     'file.classification.Measurement',
     'file.classification.Features',
@@ -50,7 +51,6 @@ DATAVIEW_COLUMNS = [
     'file.name',
     'acquisition.timestamp'
 ]
-
 ALLOWED_DATATYPES = ['func', 'anat', 'dwi', 'fmap', 'asl']
 
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
@@ -109,6 +109,8 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
 
     file_df = create_view_df(project, DATAVIEW_COLUMNS) 
     file_df = file_df[file_df['file.type'].isin(('dicom', 'nifti'))]
+    file_df['acquisition.timestamp'] = pd.to_datetime(file_df['acquisition.timestamp'])
+    file_df['sbref'] = None
     
     # Skip subject if all sessions have a 'bidsified' tag
     file_df = file_df.groupby('subject.id').filter(
@@ -127,7 +129,7 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     file_df['file_root'] = file_df['file.name'].apply(
         lambda x: x.split('.dicom')[0].split('.dcm')[0]
     )
-    
+    breakpoint() 
     # Raise warning if some non-bidsified sessions are filtered out
     filt_out_set = set(nonbids_df['subject.id']) - set(file_df['subject.id'])
     if filt_out_set:
@@ -152,6 +154,8 @@ def reproin_filter(row: pd.Series) -> str:
     label_re = re.sub(r'_\d$', '', label)
     label_ignore = label + '_ignore-BIDS'
     validator = parse_series_spec(label)
+    if validator and validator['datatype'] == 'anat' and 'datatype_suffix' not in validator:
+        validator = None
 
     if validator:
         if validator['datatype'] not in ALLOWED_DATATYPES:
@@ -191,7 +195,7 @@ def reproin_filter(row: pd.Series) -> str:
 
 def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     """Determines which acquisitions should be bidsified and converts the acquisition labels
-    to repronim standard. For acquisitions that won't be bidsified, adds '_ignore-BIDS' to
+    to reproin standard. For acquisitions that won't be bidsified, adds '_ignore-BIDS' to
     the end of the acquisition label, signaling the bids-curate gear to skip."""
 
     classified_df = file_df.copy()
@@ -211,13 +215,14 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     bidsify_df = bidsify_df[~bidsify_df['reproin'].isna()]
     bidsify_df = bidsify_df[bidsify_df['file.modality'] != 'SR']
     bidsify_df = bidsify_df[~bidsify_df['reproin'].str.contains('_ignore-BIDS')]
+    breakpoint()
     bidsify_df = bidsify_df[bidsify_df['file.type'] == 'dicom'].groupby('subject.id').filter(
         lambda x: x['file_root'].apply(
             lambda y: y in filenames_joined
         ).all()
     )
 
-    filt_out_set = set(classified_df['subject.id']) - set(bidsify_df['subject.id'])
+    filt_out_set = set(classified_df['subject.label']) - set(bidsify_df['subject.label'])
     if filt_out_set:
         log.warning("The following subjects are not yet bidsified and filtered out: "
                     f"\n{filt_out_set}"
@@ -227,40 +232,93 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
 
     return classified_df
 
-def add_repronim(classified_df: pd.DataFrame) -> pd.DataFrame:
-    repronim_df = classified_df.copy()
+def add_sbref(df: pd.DataFrame()):
+    sbref_df = df[df['file.classification.Features'].apply(
+        lambda x: x is not None and 'SBRef' in x
+    )]
+    if not sbref_df.empty:
+        bold = df[df['reproin'].str.startswith('func')]
+        bold = bold[bold['file.classification.Features'].apply(
+            lambda x: x is None or 'SBRef' not in x
+        )]
+        for i,sbref in sbref_df.iterrows():
+            bold['timedelta'] = bold['acquisition.timestamp'] - sbref['acquisition.timestamp']
+            match = bold[
+                (bold['timedelta'] <= SBREF_DELTA) & (bold['timedelta'] >= timedelta(seconds=0))
+            ]
 
-    def add_run(df: pd.DataFrame()):
-        if df.shape[0] > 1:
-            df = df.sort_values(by='acquisition.timestamp')
-            n_digits = max(2, len(str(df.shape[0])))
-            padded_list = [str(n).zfill(n_digits) for n in range(1, df.shape[0] + 1)]
-            df.insert(df.shape[1], 'run', padded_list)
-            if df['reproin'].iloc[[0]].str.startswith('fmap').item():
-                df['reproin'] = df['reproin'] + '_' + df['run']
+            if len(match) == 1:
+                df.loc[i, 'sbref'] = match['acquisition.id'].iloc[0]
+                df.loc[i, 'reproin'] = match['reproin'].iloc[0] + '_SBRef'
             else:
-                df['reproin'] = df['reproin'] + '_run-' + df['run']
+                log.error(f"{sbref['acquisition.label']} in subject {sbref['subject.id']} "
+                f"should match exactly 1 bold image, but it matched {len(match)}: "
+                f"{match['acquisition.label']}")
+                sys.exit(1)
+    return df
+
+def add_fmap(df:pd.DataFrame()):
+    fmap_df = df = df[df['file.classification.Intent'].apply(
+        lambda x: x is not None and 'Fieldmap' in x
+    )]
+    if not fmap_df.empty:
+        return df
+    else:
         return df
 
-    repronim_df = repronim_df.groupby(['session.id', 'reproin']).apply(add_run).reset_index(drop=True)
+
+
+
+def add_run(df: pd.DataFrame()):
+    skip_df = df[df.apply(
+        lambda x: 
+            (x['file.classification.Features'] is not None
+                and 'SBRef' in x['file.classification.Features'])
+            or (x['file.classification.Intent'] is not None
+                and'Fieldmap' in x['file.classification.Intent']),
+        axis=1
+    )]
+    if not skip_df.empty:
+        print(skip_df)
+    run_df = df[~df.isin(skip_df).all(axis=1)]
+
+    if run_df.shape[0] > 1:
+        run_df = run_df.sort_values(by='acquisition.timestamp')
+        n_digits = max(2, len(str(run_df.shape[0])))
+        padded_list = [str(n).zfill(n_digits) for n in range(1, run_df.shape[0] + 1)]
+        run_df.insert(run_df.shape[1], 'run', padded_list)
+        if run_df['reproin'].iloc[[0]].str.startswith('fmap').item():
+            run_df['reproin'] = run_df['reproin'] + '_' + run_df['run']
+        else:
+            run_df['reproin'] = run_df['reproin'] + '_run-' + run_df['run']
+    return pd.concat([run_df, skip_df])
+
+def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
+    reproin_df = classified_df.copy()
+
+    #reproin_df = reproin_df.groupby(['session.id']).apply(add_fmap).reset_index(drop=True)
+    reproin_df = reproin_df.groupby(['session.id', 'reproin']).apply(add_run).reset_index(drop=True)
+    reproin_df = reproin_df.groupby('session.id').apply(add_sbref).reset_index(drop=True)
 
     #####################
     columns = [
         'subject.label',
         'reproin',
         'file.info.header.dicom.SeriesDescription',
+        'file.info.header.dicom_array.ImageType.0',
         'file.classification.Intent',
         'file.classification.Measurement',
         'file.classification.Features',
         'acquisition.timestamp',
-        'file.modality'
+        'file.modality',
+        'file.type'
     ]
     output_path = gtk_context.output_dir.joinpath('reproin_dryrun.csv')
-    repronim_df[columns].to_csv(output_path)
+    reproin_df[columns].to_csv(output_path)
     breakpoint()
     #####################
 
-    for name, ses_df in repronim_df.groupby('session.id'):
+    for name, ses_df in reproin_df.groupby('session.id'):
         for i, row in ses_df.iterrows():
             if row['reproin'] != row['acquisition.label']:
                 acq_match_df = ses_df[ses_df['acquisition.label'] == row['reproin']]
@@ -269,11 +327,11 @@ def add_repronim(classified_df: pd.DataFrame) -> pd.DataFrame:
                     acq_tmp.update({'label': row['reproin'] + '_tmp'})
                 acq = client.get_acquisition(row['acquisition.id'])
                 acq.update({'label': row['reproin']})
-    return repronim_df
+    return reproin_df
 
-def rename_sessions(repronim_df: pd.DataFrame()) -> None:
+def rename_sessions(reproin_df: pd.DataFrame()) -> None:
     """Renames session to '01', or the next available number if existing sessions."""
-    for sub_id in repronim_df['subject.id'].unique():
+    for sub_id in reproin_df['subject.id'].unique():
         subject = client.get_subject(sub_id)
         sub_sessions = subject.sessions()
 
@@ -289,9 +347,9 @@ def rename_sessions(repronim_df: pd.DataFrame()) -> None:
                 new_session_label = str(i).zfill(zero_pad)
                 session.update({'label': new_session_label})
 
-def submit_bids_jobs(repronim_df: pd.DataFrame()):
+def submit_bids_jobs(reproin_df: pd.DataFrame()):
     curate_bids_gear = client.lookup('gears/curate-bids')
-    for sub_id in repronim_df['subject.id'].unique():
+    for sub_id in reproin_df['subject.id'].unique():
         subject = client.get_subject(sub_id)
         run_gear(curate_bids_gear, {}, {'reset': True}, subject)
 
@@ -380,7 +438,7 @@ def main():
         sys.exit(0)
 
     file_df = classify(file_df)
-    file_df = add_repronim(file_df)
+    file_df = add_reproin(file_df)
     rename_sessions(file_df)
     breakpoint()
     submit_bids_jobs(file_df)

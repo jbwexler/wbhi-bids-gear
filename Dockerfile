@@ -1,10 +1,12 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         netbase \
         git \
+	gcc \
+	libc6-dev \
         && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
