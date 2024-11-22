@@ -10,12 +10,12 @@ import pandas as pd
 from flywheel import ProjectOutput
 from flywheel.client import Client
 from utils.reproin import (
-    pydeface_filter,
+    check_pydeface,
+    check_nifti_presence,
     reproin_filter,
-    add_nifti_filenames,
     add_sbref,
     add_fmap,
-    add_run,
+    add_run
 )
 from utils.flywheel import (
     create_view_df,
@@ -33,42 +33,19 @@ log = logging.getLogger(__name__)
 
 
 
-def get_subjects(project: ProjectOutput, client: Client) -> pd.DataFrame:
+def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     """Returns a list of subject IDs of subjects that have not yet been bidsified
     and are ready to be."""
 
     file_df = create_view_df(project, DATAVIEW_COLUMNS, client) 
-    #file_df = file_df[file_df['file.type'].isin(('dicom', 'nifti'))]
     file_df['acquisition.timestamp'] = pd.to_datetime(file_df['acquisition.timestamp'])
     file_df['sbref'] = None
     
-    # Skip subject if all sessions have a 'bidsified' tag
     file_df = file_df.groupby('subject.id').filter(
             lambda x: x['session.tags'].apply(lambda x: 'bidsified' not in x).any()
     )
-    nonbids_df = file_df.copy()
     
-    # Skip subjects if not all structural T1 and T2 niftis have 'pydeface' tag
-    nii_df = file_df.copy()
-    nii_df = nii_df.groupby('acquisition.id').filter(pydeface_filter)
-    file_df = file_df[~file_df['subject.id'].isin(nii_df['subject.id'])]
-
-    # Add column of filename without the suffix to find matching dicoms and niftis
-    file_df = file_df[~file_df['file.name'].isnull()]
-    file_df['file.name'] = file_df['file.name'].str.replace('_', '.')
-    file_df['file_root'] = file_df['file.name'].apply(
-        lambda x: x.split('.dicom')[0].split('.dcm')[0]
-    )
-
-    # Skip subjects that have any acquisitions without niftis
-    has_nii_df = file_df.copy()
-
-    # Raise warning if some non-bidsified sessions are filtered out
-    filt_out_set = set(nonbids_df['subject.id']) - set(file_df['subject.id'])
-    if filt_out_set:
-        log.warning("The following subjects are not yet bidsified and filtered out: "
-                    f"\n{filt_out_set}"
-        )
+    file_df = check_pydeface(file_df)
 
     if file_df.empty:
         log.info("No subjects were found that need to be bidsified.")
@@ -76,12 +53,16 @@ def get_subjects(project: ProjectOutput, client: Client) -> pd.DataFrame:
 
     return file_df
 
-def split_multiple_dicoms(df: pd.DataFrame, client):
+def split_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
     """Finds any acquisitions with multiple dicoms and splits them into
     multiple acquisitions"""
-    mult_df = df.groupby('acquisition.id').filter(
+    df_copy = df.copy()
+    mult_df = df_copy.groupby('acquisition.id').filter(
         lambda x: len(x[x['file.type'] == 'dicom']) > 1
     )
+    # for now just throw out subjects that have multiple dicom acquisitions
+    return df_copy[~df_copy['subject.label'].isin(mult_df['subject.label'])]
+
     for acq_name,acq_group in mult_df.groupby('acquisition.id'):
         for i,dcm in acq_group[acq_group['file.type'] == 'dicom'].iloc[1:].iterrows():
             new_acq_df = acq_group[acq_group['file.name'].apply(
@@ -93,37 +74,26 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     to reproin standard. For acquisitions that won't be bidsified, adds '_ignore-BIDS' to
     the end of the acquisition label, signaling the bids-curate gear to skip."""
     classified_df = file_df.copy()
-    classified_df = classified_df[classified_df['session.tags'].apply(lambda x: 'bidsified' not in x)]
-
-    reproin_series = classified_df.apply(reproin_filter, axis=1)
-    if reproin_series.empty:
+    classified_df = classified_df[classified_df['session.tags'].apply(
+        lambda x: 'bidsified' not in x)]
+    class_dcm_df = classified_df[classified_df['file.type'] == 'dicom']
+    if class_dcm_df.empty:
         log.info("No acquisitions were found that need to be bidsified.")
         sys.exit(0)
+    reproin_mapping = class_dcm_df.set_index('acquisition.id').apply(reproin_filter, axis=1)
 
-    classified_df['reproin'] = reproin_series
-
-    # Remove subjects if any included acqs don't have corresponding niftis
-    bidsify_df = classified_df.copy()
-    bidsify_df = bidsify_df[~bidsify_df['reproin'].isna()]
-    bidsify_df = bidsify_df[~bidsify_df['reproin'].str.contains('_ignore-BIDS')]
-    bidsify_df = bidsify_df.groupby('subject.id').apply(add_nifti_filenames).reset_index(drop=True)
+    classified_df['reproin'] = classified_df['acquisition.id'].map(reproin_mapping)
+    classified_df = check_nifti_presence(classified_df)
+    classified_df = classified_df.groupby('session.id').apply(add_fmap).reset_index(drop=True)
     breakpoint()
+    classified_df = classified_df.groupby(['session.id', 'reproin']).apply(add_run)
+    classified_df = classified_df.groupby('session.id').apply(add_sbref)
 
-    filt_out_set = set(classified_df['subject.label']) - set(bidsify_df['subject.label'])
-    if filt_out_set:
-        log.warning("The following subjects were not bidsified: "
-          f"\n{filt_out_set}"
-        )
-
-    return bidsify_df
+    return classified_df
 
 def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
     reproin_df = classified_df.copy()
 
-    print(reproin_df.shape)
-    reproin_df = reproin_df.groupby('session.id').apply(add_fmap).reset_index(drop=True)
-    reproin_df = reproin_df.groupby(['session.id', 'reproin']).apply(add_run).reset_index(drop=True)
-    reproin_df = reproin_df.groupby('session.id').apply(add_sbref).reset_index(drop=True)
 
     #####################
     columns = [
@@ -227,12 +197,12 @@ def main():
     #deid_project = client.lookup("wbhi/deid")
 
     try:
-        file_df = get_subjects(deid_project, client)
+        file_df = get_subjects(deid_project)
     except (KeyError, NameError):
         log.info("All sessions have already been bidsified. Exiting")
         sys.exit(0)
 
-    #file_df = split_multiple_dicoms(file_df)
+    file_df = split_multiple_dicoms(file_df)
     file_df = classify(file_df)
     file_df = add_reproin(file_df)
     submit_bids_jobs(file_df)
