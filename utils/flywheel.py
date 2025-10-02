@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 
 import flywheel
-from flywheel import Gear
-import pandas as pd
+from flywheel import Gear, SessionListOutput, ProjectOutput
 import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,7 +11,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def create_view_df(container, columns: list, client, filter=None) -> pd.DataFrame:
+def create_view_df(container, columns: list, client, filter=None, container_type='acquisition'):
     """Get unique labels for all acquisitions in the container.
 
     This is done using a single Data View which is more efficient than iterating through
@@ -20,7 +19,7 @@ def create_view_df(container, columns: list, client, filter=None) -> pd.DataFram
     """
 
     builder = flywheel.ViewBuilder(
-        container='acquisition',
+        container=container_type,
         filename="*.*",
         match='all',
         filter=filter,
@@ -32,7 +31,7 @@ def create_view_df(container, columns: list, client, filter=None) -> pd.DataFram
         builder.column(src=c)
    
     view = builder.build()
-    return client.read_view_dataframe(view, container.id)
+    return client.read_view_dataframe(view, container.id, opts={'dtype': str})
 
 def send_email(subject, html_content, sender, recipients, password):
     msg = MIMEMultipart()
@@ -65,6 +64,27 @@ def run_gear(
         except flywheel.rest.ApiException:
             #log.exception('An exception was raised when attempting to submit a job for %s', gear.name)
             time.sleep(1)
+
+def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
+    """Moves a session to another project."""
+    try:
+        session.update(project=dst_project.id)
+    except flywheel.ApiException as exc:
+        if exc.status == 422:
+            sub_label = client.get_subject(session.parents.subject).label.replace(',', '\,')
+            subject_dst_id = dst_project.subjects.find_first(f'label="{sub_label}"').id
+            body = {
+                "sources": [session.id],
+                "destinations": [subject_dst_id],
+                "destination_container_type": 'subjects',
+                "conflict_mode": 'skip'
+            }
+            client.bulk_move_sessions(body=body)
+        else:
+            log.exception(
+                f"Error moving subject {session.subject.label}/{session.label}"
+                "from {src_project.label} to {dst_project.label}"
+            )
 
 
 

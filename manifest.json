@@ -43,6 +43,11 @@
 		"gmail_password": {
 			"description": "Password of gmail account to use for sending emails",
 			"type": "string"
+		},
+		"debug": {
+			"default": false,
+			"description": "Log debug messages",
+			"type": "boolean"
 		}
 	},
 	"command": "python run.py"
