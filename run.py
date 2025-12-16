@@ -16,6 +16,7 @@ from utils.reproin import (
     add_fmap,
     add_run,
     add_rec,
+    REC_LIST,
 )
 from utils.flywheel import create_view_df, send_email, run_gear, mv_session
 from utils.constants import WAIT_TIMEOUT, DATAVIEW_COLUMNS
@@ -32,7 +33,7 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     """Returns a list of subject IDs of subjects that have not yet been bidsified
     and are ready to be."""
 
-    file_df = create_view_df(project, DATAVIEW_COLUMNS, client)
+    file_df = create_view_df(project, DATAVIEW_COLUMNS.keys(), client)
     file_df["acquisition.timestamp"] = pd.to_datetime(
         file_df["acquisition.timestamp"], format="mixed", dayfirst=True
     )
@@ -51,83 +52,114 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     return file_df
 
 
-def split_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
-    """Finds any acquisitions with multiple dicoms and splits them into
-    multiple acquisitions"""
+def skip_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
+    """Removes any subjects containing  any acquisitions with multiple dicoms."""
     df_copy = df.copy()
+    df_copy = df_copy[~df_copy["file.classification.Intent"].apply(
+        lambda x: type(x) is list and "Localizer" in x
+    )]
     mult_df = df_copy.groupby("acquisition.id").filter(
         lambda x: len(x[x["file.type"] == "dicom"]) > 1
     )
 
-    # for now just throw out subjects that have multiple dicom acquisitions
     mult_df_subs = mult_df["subject.label"].unique()
-    log.info(
-        """Skipping the following subjects because they contain files with
-        multiple dicoms: %s"""
-        % mult_df_subs
-    )
+
+    if mult_df_subs.size > 0:
+        log.info(
+            """Skipping the following subjects because they contain files with
+            multiple dicoms: %s"""
+            % mult_df_subs
+        )
 
     return df_copy[~df_copy["subject.label"].isin(mult_df_subs)]
 
-    # for acq_name,acq_group in mult_df.groupby('acquisition.id'):
-    #    for i,dcm in acq_group[acq_group['file.type'] == 'dicom'].iloc[1:].iterrows():
-    #        new_acq_df = acq_group[acq_group['file.name'].apply(
-    #            lambda x, dcm=dcm: dcm['file_root'] in x
-    #        )]
-
 
 def classify(file_df: pd.DataFrame) -> pd.DataFrame:
-    """Determines which acquisitions should be bidsified and converts the acquisition labels
-    to reproin standard. For acquisitions that won't be bidsified, adds '_ignore-BIDS' to
-    the end of the acquisition label, signaling the bids-curate gear to skip."""
-    classified_df = file_df.copy()
-    classified_df = classified_df[
-        classified_df["session.tags"].apply(lambda x: "bidsified" not in x)
+    """Determines which acquisitions should be bidsified and adds columns containing
+    appropriate reproin labels, as well as fmap, rec, run and sbref info. For acquisitions 
+    that won't be bidsified, adds '_ignore-BIDS' to the end o"""
+    out_df = file_df.copy()
+
+    out_df = out_df[
+        out_df["session.tags"].apply(lambda x: "bidsified" not in x)
     ]
-    class_dcm_df = classified_df[classified_df["file.type"] == "dicom"]
-    if class_dcm_df.empty:
+    out_df = out_df[~out_df['acquisition.label'].str.endswith("_ignore-BIDS")]
+    out_df = skip_multiple_dicoms(out_df)
+
+    ##### Skipping spec spec2nii gear. Remmeber to remove these lines!!!!!
+    out_df = out_df[out_df['file.classification.Intent'].apply(
+        lambda x: bool(x) and 'Spectroscopy' not in x
+    )]
+    #####
+    
+    dcm_df = out_df[out_df["file.type"] == "dicom"]
+
+    if dcm_df.empty:
         log.info("No acquisitions were found that need to be bidsified.")
         sys.exit(0)
-    reproin_mapping = class_dcm_df.set_index("acquisition.id").apply(
+
+    reproin_mapping = dcm_df.set_index("acquisition.id").apply(
         reproin_filter, axis=1
     )
+    out_df["reproin"] = out_df["acquisition.id"].map(reproin_mapping)
 
-    classified_df["reproin"] = classified_df["acquisition.id"].map(reproin_mapping)
-    classified_df = check_nifti_presence(classified_df)
-    classified_df = (
-        classified_df.groupby("session.id")[classified_df.columns]
+    out_df = check_nifti_presence(out_df)
+
+    out_df = (
+        out_df.groupby("session.id")[out_df.columns]
         .apply(add_fmap)
         .reset_index(drop=True)
     )
-    classified_df = classified_df[classified_df["file.type"] == "dicom"]
-    classified_df = (
-        classified_df.groupby("session.id")[classified_df.columns]
+    out_df = out_df[out_df["file.type"] == "dicom"]
+    out_df = (
+        out_df.groupby("session.id")[out_df.columns]
         .apply(add_rec)
         .reset_index(drop=True)
     )
-    classified_df = (
-        classified_df.groupby(["session.id", "reproin"])[classified_df.columns]
+    out_df = (
+        out_df.groupby(["session.id", "reproin"])[out_df.columns]
         .apply(add_run)
         .reset_index(drop=True)
     )
-    classified_df = (
-        classified_df.groupby("session.id")[classified_df.columns]
+    out_df = (
+        out_df.groupby("session.id")[out_df.columns]
         .apply(add_sbref)
         .reset_index(drop=True)
     )
 
-    return classified_df
+    return out_df
 
 
 def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
     reproin_df = classified_df.copy()
 
     #####################
+    breakpoint()
+    rec_df_list = []
+    rec_acq_list = []
+    for group in REC_LIST:
+        match = False
+        for acq_df in rec_acq_list:
+            if group["acquisition.label"].equals(acq_df):
+                match = True
+                break
+        if match:
+            continue
+
+        rec_df_list.append(group)
+        rec_acq_list.append(group["acquisition.label"])
+
+    breakpoint()
+    rec_df = pd.concat(rec_df_list)
+
+    output_path = gtk_context.output_dir.joinpath("rec_list.csv")
+    rec_df.to_csv(output_path)
+
     columns = [
         "subject.label",
         "reproin",
         "file.info.header.dicom.SeriesDescription",
-        "file.info.header.dicom_array.ImageType.0",
+        "file.info.header.dicom.ImageType",
         "file.classification.Intent",
         "file.classification.Measurement",
         "file.classification.Features",
@@ -137,7 +169,7 @@ def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
     ]
     output_path = gtk_context.output_dir.joinpath("reproin_dryrun.csv")
     reproin_df[columns].to_csv(output_path)
-    # breakpoint()
+    breakpoint()
     #####################
 
     for name, ses_df in reproin_df.groupby("session.id"):
@@ -255,11 +287,9 @@ def main():
         log.info("All sessions have already been bidsified. Exiting")
         sys.exit(0)
 
-    breakpoint()
-
     rename_sessions(file_df)
-    file_df = split_multiple_dicoms(file_df)
     file_df = classify(file_df)
+    breakpoint()
     file_df = add_reproin(file_df)
     breakpoint()
     submit_bids_jobs(file_df)

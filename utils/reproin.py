@@ -3,7 +3,6 @@
 import re
 import pandas as pd
 from heudiconv.heuristics.reproin import parse_series_spec
-import sys
 import logging
 from datetime import timedelta
 from utils.constants import (
@@ -17,6 +16,8 @@ from utils.constants import (
 )
 
 log = logging.getLogger(__name__)
+
+REC_LIST = []
 
 
 def pydeface_filter(df: pd.DataFrame) -> bool:
@@ -67,12 +68,10 @@ def check_pydeface(file_df: pd.DataFrame) -> pd.DataFrame:
 
 def check_nifti_presence(file_df: pd.DataFrame) -> pd.DataFrame:
     """Removes subjects that have any acquisitions without niftis"""
+    file_df = file_df.copy()
     no_nii_df = file_df.copy()
-    no_nii_df = (
-        no_nii_df.groupby("acquisition.id")
-        .filter(lambda x: x[x["reproin"].str.endswith("_ignore-BIDS")].empty)
-        .reset_index(drop=True)
-    )
+
+    no_nii_df = no_nii_df[~no_nii_df["reproin"].str.endswith(("_ignore-BIDS"), na=False)]
     no_nii_df = no_nii_df[no_nii_df["file.modality"] == "MR"]
     no_nii_df = (
         no_nii_df.groupby("acquisition.id")
@@ -82,9 +81,11 @@ def check_nifti_presence(file_df: pd.DataFrame) -> pd.DataFrame:
 
     file_df = file_df[~file_df["subject.label"].isin(no_nii_df["subject.label"])]
     if not no_nii_df.empty:
+        pd.options.display.max_rows = 5000
         log.warning(
             "The following subjects contain acquisition(s) without nifti(s): "
-            f"\n{no_nii_df['subject.label'].unique()}"
+          #  f"\n{no_nii_df['subject.label'].unique()}"
+            f"\n{no_nii_df[['subject.label', 'acquisition.label']]}"
         )
 
     return file_df
@@ -94,19 +95,20 @@ def reproin_filter(row: pd.Series) -> str:
     label = row["acquisition.label"]
     if row["file.type"] != "dicom":
         return label
-    elif "_ignore-BIDS" in label:
-        return label
 
     # Utilize acq label if already in reproin format. Otherwise, create a reproin label
     label_re = re.sub(r"_\d$", "", label)
     label_ignore = label + "_ignore-BIDS"
     if label_re in IGNORE_SCANS:
         return label_ignore
-    image_type = row["file.info.header.dicom_array.ImageType.0"]
+    image_type = row["file.info.header.dicom.ImageType"]
     # to-do: add exception for mp2rage
     if image_type and "derived" in image_type:
         return label_ignore
-    validator = parse_series_spec(label)
+    try:
+        validator = parse_series_spec(label)
+    except IndexError:
+        validator = {}
     if (
         validator
         and validator["datatype"] == "anat"
@@ -134,7 +136,7 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
         elif label == "t2_tse_tra_hi-res_hippocampus":
             return "anat-T2w_acq-hippocampus"
-        elif label_re.endswith("PhysioLog"):
+        elif label_re.endswith(("PhysioLog", "setter", "TENSOR")):
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
@@ -153,6 +155,8 @@ def reproin_filter(row: pd.Series) -> str:
                     return label_ignore
                 else:
                     return "dwi"
+            else:
+                return label_ignore
         elif (
             intent
             and "Functional" in intent
@@ -169,13 +173,16 @@ def reproin_filter(row: pd.Series) -> str:
 def classify_fmap_acq(image_type_list: list) -> str:
     """Determines the type of fieldmap file (phase, magnitude or diffusion) based on
     the presence of corresponding strings in the ImageType dict."""
-
-    if "M" in image_type_list:
+    if not image_type_list:
+        return None
+    elif "M" in image_type_list:
         return "magnitude"
     elif "P" in image_type_list:
         return "phase"
     elif "DIFFUSION" in image_type_list:
         return "diffusion"
+    elif "FMRI" in image_type_list:
+        return "fmri"
 
 
 def get_runs(df: pd.DataFrame) -> pd.DataFrame:
@@ -210,14 +217,66 @@ def timestamp_group(df: pd.DataFrame, delta: timedelta) -> pd.DataFrame:
     return df
 
 
+def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
+    group = group.copy()
+
+    if not fmap_file_types["diffusion"].empty:
+        non_phase = fmap_file_types["diffusion"]
+
+        if (
+            group[group["file.type"] == "bval"].empty
+            or group[group["file.type"] == "bvec"].empty
+        ):
+            log.error(
+                f"Subject {subject} has diffusion fmaps without bval/bvecs."
+            )
+            return None
+
+        group["fmap_acq"] = "dwi"
+    elif not fmap_file_types["magnitude"].empty:
+        non_phase = fmap_file_types["magnitude"]
+        group["fmap_acq"] = "bold"
+    elif not fmap_file_types["fmri"].empty:
+        non_phase = fmap_file_types["fmri"]
+        group["fmap_acq"] = "bold"
+
+
+    non_phase["direction"] = non_phase["acquisition.label"].str.extract(
+        r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)"
+    )[0]
+
+    if non_phase["direction"].isnull().any():
+        log.error(
+            f"Subject {subject} has acquisition with 2 epis but no direction."
+        )
+        return None
+    elif len(non_phase) == 2 and len(non_phase["acquisition.id"].unique()) == 1:
+        log.error(
+            f"Subject {subject} has 2 epis in one acquisition."
+        )
+        return None
+
+    reproin_mapping = non_phase.groupby("acquisition.id")[
+        non_phase.columns
+    ].apply(lambda x: "fmap-epi_dir-" + x["direction"].iloc[0])
+    group.loc[:, "reproin"] = group["acquisition.id"].map(reproin_mapping)
+
+    return group
+
+
 def add_fmap(df: pd.DataFrame()):
     df = df.copy()
+    df = df[~df['reproin'].str.endswith("_ignore-BIDS", na=False)]
+    if df.empty:
+        return df
+
     subject = df["subject.label"].iloc[0]
     fmap_df = df[df["file.modality"] == "MR"]
     fmap_df = (
         fmap_df.groupby("acquisition.id")
         .filter(
             lambda x: (
+                not x[x["file.type"] == "dicom"].empty and
                 not x[x["file.type"] == "dicom"]["file.classification.Intent"]
                 .isnull()
                 .values.any()
@@ -232,14 +291,17 @@ def add_fmap(df: pd.DataFrame()):
     if fmap_df.empty:
         return df
 
-    # Determine fieldmap type (magnitude, phase, etc.)
+    # Determine fieldmap file types (magnitude, phase, etc.)
     type_mapping = fmap_df.groupby("acquisition.id")[fmap_df.columns].apply(
         lambda x: classify_fmap_acq(
             x[x["file.type"] == "dicom"][
-                "file.info.header.dicom_array.ImageType.0"
+                "file.info.header.dicom.ImageType"
             ].iloc[0]
         )
     )
+    if type_mapping.empty:
+        log.error(f"Subject {subject} doesn't contain any files with proper ImageType.")
+        return df
     fmap_df["fmap_file_type"] = fmap_df["acquisition.id"].map(type_mapping)
     fmap_df = fmap_df[
         fmap_df["file.type"].apply(lambda x: x in ("nifti", "bval", "bvec"))
@@ -254,6 +316,8 @@ def add_fmap(df: pd.DataFrame()):
     fmap_df = timestamp_group(fmap_df, FMAP_DELTA)
     fmap_df["fmap_acq"] = None
     fmap_df = fmap_df.set_index("file.file_id")
+
+    # Determine bids fmap case and assign reproin labels
     for name, group in fmap_df.groupby("group"):
         if (
             group.iloc[0]["acquisition.timestamp"]
@@ -277,78 +341,70 @@ def add_fmap(df: pd.DataFrame()):
         magnitude = niftis[niftis["fmap_file_type"] == "magnitude"]
         phase = niftis[niftis["fmap_file_type"] == "phase"]
         diffusion = niftis[niftis["fmap_file_type"] == "diffusion"]
+        fmri = niftis[niftis["fmap_file_type"] == "fmri"]
+        fmap_file_types = {
+            "magnitude": magnitude,
+            "phase": phase,
+            "diffusion": diffusion,
+            "fmri": fmri,
+        }
 
-        if magnitude.empty and diffusion.empty:
+        if magnitude.empty and diffusion.empty and fmri.empty:
             log.error(
-                f"Subject {subject} has fieldmap(s) with no magnitude or diffusion files."
+                f"Subject {subject} has fieldmap(s) with no magnitude, diffusion or fmri files."
             )
             return None
-        elif not magnitude.empty and not diffusion.empty:
+        elif sum((magnitude.empty, diffusion.empty, fmri.empty)) < 2:
             log.error(
-                f"Subject {subject} has fieldmap(s) with both magnitude and diffusion files."
+                f"Subject {subject} has fieldmap(s) with more than one type of files."
             )
             return None
-        elif len(magnitude) > 2:
-            log.error(f"Subject {subject} has fieldmap(s) with > 2 magnitude files.")
-            return None
-        elif len(phase) > 2:
-            log.error(f"Subject {subject} has fieldmap(s) with > 2 phase files.")
-            return None
-        elif len(phase) in (1, 2):
-            if magnitude["magnitude_type"].isna().any():
-                log.error(
-                    f"Subject {subject} has magnitude(s) not matching expected filenames."
-                )
+        elif not magnitude.empty:
+            if len(magnitude) > 2:
+                log.error(f"Subject {subject} has fieldmap(s) with > 2 magnitude files.")
                 return None
-            if len(phase) == 1:
-                group["fmap_acq"] = "phasediff"
-            else:
-                group["fmap_acq"] = "twophase"
-            group["reproin"] = "fmap-gre"
-        elif len(phase) == 0:
-            if not diffusion.empty:
-                mag_dif = diffusion
-                if (
-                    group[group["file.type"] == "bval"].empty
-                    or group[group["file.type"] == "bvec"].empty
-                ):
+            elif len(phase) > 2:
+                log.error(f"Subject {subject} has fieldmap(s) with > 2 phase files.")
+                return None
+            elif len(phase) in (1, 2):
+                pattern = re.compile(r"(?i)(spinecho|(^|[^a-zA-Z0-9])se($|[^a-zA-Z0-9])|(?-i:AP|PA))")
+                magnitude.loc[:, "spinecho"] = magnitude["acquisition.label"].str.match(pattern)
+                num_spinecho = len(magnitude[magnitude["spinecho"]])
+
+                if num_spinecho not in (0, len(magnitude)):
                     log.error(
-                        f"Subject {subject} has diffusion fmaps without bval/bvecs."
+                        f"Subject {subject} has magnitude(s) that are both spinecho and not."
                     )
                     return None
-                group["fmap_acq"] = "dwi"
-            else:
-                mag_dif = magnitude
-                group["fmap_acq"] = "bold"
-
-            mag_dif["direction"] = mag_dif["acquisition.label"].str.extract(
-                r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)"
-            )[0]
-
-            if len(mag_dif) == 1:
-                if not mag_dif["direction"].isnull().all():
+                elif (
+                    num_spinecho == len(magnitude)
+                    and (
+                        len(magnitude[magnitude["acquisition.label"].str.contains("AP")])
+                        == len(magnitude[magnitude["acquisition.label"].str.contains("PA")])
+                    )):
+                        # Case 4
+                        group = get_case_four(group, fmap_file_types, subject)
+                elif magnitude["magnitude_type"].isna().any():
                     log.error(
-                        f"Subject {subject} has acquisition with 1 epis but direction."
+                        f"Subject {subject} has magnitude(s) not matching expected filenames."
                     )
                     return None
-                group["reproin"] = "fmap-epi"
-            elif len(mag_dif == 2):
-                if mag_dif["direction"].isnull().any():
-                    log.error(
-                        f"Subject {subject} has acquisition with 2 epis but no direction."
-                    )
-                    return None
-                elif len(mag_dif["acquisition.id"].unique()) == 1:
-                    log.error(
-                        f"Subject {subject} has acquisition with 2 epis in one acquisition."
-                    )
-                    return None
+                elif len(phase) == 1:
+                    # Case 1
+                    group["fmap_acq"] = "phasediff"
+                else:
+                    # Case 2
+                    group["fmap_acq"] = "twophase"
+                    group["reproin"] = "fmap-gre"
+            elif len(phase) == 0:
+                # Case 4
+                group = get_case_four(group, fmap_file_types, subject)
+        else:
+            # Case 4
+            group = get_case_four(group, fmap_file_types, subject)
 
-                reproin_mapping = mag_dif.groupby("acquisition.id")[
-                    mag_dif.columns
-                ].apply(lambda x: "fmap-epi_dir-" + x["direction"].iloc[0])
-                group["reproin"] = group["acquisition.id"].map(reproin_mapping)
-
+        if group is None:
+            return None
         fmap_df.update(group)
 
     if fmap_df["fmap_acq"].nunique() > 1:
@@ -373,31 +429,41 @@ def add_fmap(df: pd.DataFrame()):
 
 def add_rec(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    subject = df["subject.label"].iloc[0]
     rec_df = df[df["reproin"].str.startswith(("anat", "asl"))]
+
     if rec_df.empty:
         return df
+
     rec_df = (
         rec_df.groupby("reproin")[rec_df.columns]
         .apply(lambda x: timestamp_group(x, REC_DELTA))
         .reset_index(drop=True)
     )
 
+    subject = df["subject.label"].iloc[0]
+
     for i, groupby in rec_df.groupby(["reproin", "group"]):
+        if len(groupby) == 1:
+            continue
+
+
+        REC_LIST.append(groupby)
+
         if len(groupby) > 2:
             log.error(
                 f"Subject {subject} has more than 2 acquisitions in the same rec group."
             )
-            return None
+            continue #return None
         elif len(groupby) == 2:
-            groupby["norm"] = groupby["file.info.header.dicom_array.ImageType.0"].apply(
-                lambda x: "NORM" in x
+            groupby["norm"] = groupby["file.info.header.dicom.ImageType"].apply(
+                lambda x: x is not None and  "NORM" in x
             )
+
             if len(groupby[groupby["norm"]]) != 1:
                 log.error(
                     f"Subject {subject} has a rec group with 0 or 2 NORM acquisitions"
                 )
-                return None
+                continue #return None
             acq_id_update = groupby[groupby["norm"]]["acquisition.id"].iloc[0]
             df.loc[df["acquisition.id"] == acq_id_update, "reproin"] += "_rec-norm"
 
@@ -421,19 +487,20 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
 def add_sbref(df: pd.DataFrame()):
     df = df.copy()
     sbref_df = df[df["acquisition.label"].str.contains("sbref", case=False)]
-    sbref_df = sbref_df[~sbref_df["acquisition.label"].str.endswith("_ignore-BIDS")]
+
     if not sbref_df.empty:
         func_dwi = df[df["reproin"].str.startswith(("func", "dwi"))]
         func_dwi = func_dwi[
             ~func_dwi["acquisition.label"].str.contains("sbref", case=False)
         ]
+
         for i, sbref in sbref_df.iterrows():
             func_dwi["timedelta"] = (
-                func_dwi["acquisition.timestamp"] - sbref["acquisition.timestamp"]
+                sbref["acquisition.timestamp"] - func_dwi["acquisition.timestamp"]
             )
             match = func_dwi[
                 (func_dwi["timedelta"] <= SBREF_DELTA)
-                & (func_dwi["timedelta"] >= timedelta(seconds=0))
+                & (func_dwi["timedelta"] >= timedelta(seconds=-3))
             ]
 
             if len(match) == 1:
@@ -445,16 +512,15 @@ def add_sbref(df: pd.DataFrame()):
                 log.error(
                     "%s in subject %s should match exactly 1 bold image, but it matched 2: %s"
                     % (
-                        {sbref["acquisition.label"]},
-                        {sbref["subject.label"]},
-                        {len(match)},
-                        {match["acquisition.label"]},
+                        sbref["acquisition.label"],
+                        sbref["subject.label"],
+                        match["acquisition.label"],
                     )
                 )
             else:
                 log.error(
                     "%s in subject %s didn't match any bold images"
-                    % ({sbref["acquisition.label"]}, {sbref["subject.label"]})
+                    % (sbref["acquisition.label"], sbref["subject.label"])
                 )
 
                 return None

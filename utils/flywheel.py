@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 
 def create_view_df(
-    container, columns: list, client, filter=None, container_type="acquisition"
+    container, column_dict: dict, client, filter=None, container_type="acquisition"
 ):
     """Get unique labels for all acquisitions in the container.
 
@@ -29,11 +29,11 @@ def create_view_df(
         include_ids=False,
         include_labels=False,
     )
-    for c in columns:
+    for c in column_dict:
         builder.column(src=c)
 
     view = builder.build()
-    return client.read_view_dataframe(view, container.id, opts={"dtype": str})
+    return client.read_view_dataframe(view, container.id, opts={"dtype": column_dict})
 
 
 def send_email(subject, html_content, sender, recipients, password):
