@@ -55,9 +55,11 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
 def skip_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
     """Removes any subjects containing  any acquisitions with multiple dicoms."""
     df_copy = df.copy()
-    df_copy = df_copy[~df_copy["file.classification.Intent"].apply(
-        lambda x: type(x) is list and "Localizer" in x
-    )]
+    df_copy = df_copy[
+        ~df_copy["file.classification.Intent"].apply(
+            lambda x: type(x) is list and "Localizer" in x
+        )
+    ]
     mult_df = df_copy.groupby("acquisition.id").filter(
         lambda x: len(x[x["file.type"] == "dicom"]) > 1
     )
@@ -76,31 +78,29 @@ def skip_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
 
 def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     """Determines which acquisitions should be bidsified and adds columns containing
-    appropriate reproin labels, as well as fmap, rec, run and sbref info. For acquisitions 
+    appropriate reproin labels, as well as fmap, rec, run and sbref info. For acquisitions
     that won't be bidsified, adds '_ignore-BIDS' to the end o"""
     out_df = file_df.copy()
 
-    out_df = out_df[
-        out_df["session.tags"].apply(lambda x: "bidsified" not in x)
-    ]
-    out_df = out_df[~out_df['acquisition.label'].str.endswith("_ignore-BIDS")]
+    out_df = out_df[out_df["session.tags"].apply(lambda x: "bidsified" not in x)]
+    out_df = out_df[~out_df["acquisition.label"].str.endswith("_ignore-BIDS")]
     out_df = skip_multiple_dicoms(out_df)
 
     ##### Skipping spec spec2nii gear. Remmeber to remove these lines!!!!!
-    out_df = out_df[out_df['file.classification.Intent'].apply(
-        lambda x: bool(x) and 'Spectroscopy' not in x
-    )]
+    out_df = out_df[
+        out_df["file.classification.Intent"].apply(
+            lambda x: bool(x) and "Spectroscopy" not in x
+        )
+    ]
     #####
-    
+
     dcm_df = out_df[out_df["file.type"] == "dicom"]
 
     if dcm_df.empty:
         log.info("No acquisitions were found that need to be bidsified.")
         sys.exit(0)
 
-    reproin_mapping = dcm_df.set_index("acquisition.id").apply(
-        reproin_filter, axis=1
-    )
+    reproin_mapping = dcm_df.set_index("acquisition.id").apply(reproin_filter, axis=1)
     out_df["reproin"] = out_df["acquisition.id"].map(reproin_mapping)
 
     out_df = check_nifti_presence(out_df)
