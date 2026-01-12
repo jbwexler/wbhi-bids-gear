@@ -52,10 +52,17 @@ def pydeface_filter(df: pd.DataFrame) -> bool:
 
 
 def check_pydeface(file_df: pd.DataFrame) -> pd.DataFrame:
-    """Removes subjects if not all structural T1 and T2 niftis have 'pydeface' tag"""
-    no_pydeface_df = file_df.copy()
-    no_pydeface_df = no_pydeface_df.groupby("acquisition.id").filter(pydeface_filter)
-    file_df = file_df[~file_df["subject.label"].isin(no_pydeface_df["subject.label"])]
+    """Returns a df of files from subjects for which all structural T1 and T2 niftis
+    have 'pydeface' tag"""
+    file_df = file_df.copy()
+
+    if file_df.empty:
+        return file_df
+
+    no_pydeface_df = file_df.groupby("acquisition.id").filter(pydeface_filter)
+    file_df = file_df[
+        ~file_df["subject.label"].isin(no_pydeface_df["subject.label"].unique())
+    ]
 
     if not no_pydeface_df.empty:
         log.warning(

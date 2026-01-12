@@ -30,10 +30,15 @@ log = logging.getLogger(__name__)
 
 
 def get_subjects(project: ProjectOutput) -> pd.DataFrame:
-    """Returns a list of subject IDs of subjects that have not yet been bidsified
+    """Returns a df of files from subjects that have not yet been bidsified
     and are ready to be."""
 
     file_df = create_view_df(project, DATAVIEW_COLUMNS.keys(), client)
+
+    if file_df.empty:
+        log.info("No subjects were found in deid project.")
+        sys.exit(0)
+
     file_df["acquisition.timestamp"] = pd.to_datetime(
         file_df["acquisition.timestamp"], format="mixed", dayfirst=True
     )
@@ -52,18 +57,46 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     return file_df
 
 
-def skip_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
-    """Removes any subjects containing  any acquisitions with multiple dicoms."""
-    df_copy = df.copy()
-    df_copy = df_copy[
-        ~df_copy["file.classification.Intent"].apply(
+def rename_sessions(df: pd.DataFrame()) -> None:
+    """Renames session to '01', or the next available number if existing sessions."""
+    df_relabel = df[df["session.label"] != "01"]
+
+    for sub_id in df_relabel["subject.id"].unique():
+        subject = client.get_subject(sub_id)
+        sub_sessions = subject.sessions()
+
+        if len(sub_sessions) == 1:
+            session = sub_sessions[0]
+
+            log.debug("Renaming session %s to 01" % (session.id,))
+            session.update({"label": "01"})
+        else:
+            sub_sessions_sorted = sorted(sub_sessions, key=lambda d: d.timestamp)
+            num_digits = len(str(len(sub_sessions_sorted)))
+            zero_pad = max(num_digits, 2)
+
+            for i, session in enumerate(sub_sessions_sorted, 1):
+                new_session_label = str(i).zfill(zero_pad)
+
+                if session.label != new_session_label:
+                    log.debug(
+                        "Renaming session %s to %s" % (session.id, new_session_label)
+                    )
+                    session.update({"label": new_session_label})
+
+
+def skip_multiple_dicoms(file_df: pd.DataFrame) -> pd.DataFrame:
+    """Removes any subjects containing any acquisitions with multiple dicoms."""
+    file_df = file_df.copy()
+
+    mult_df = file_df[
+        ~file_df["file.classification.Intent"].apply(
             lambda x: type(x) is list and "Localizer" in x
         )
     ]
-    mult_df = df_copy.groupby("acquisition.id").filter(
+    mult_df = mult_df.groupby("acquisition.id").filter(
         lambda x: len(x[x["file.type"] == "dicom"]) > 1
     )
-
     mult_df_subs = mult_df["subject.label"].unique()
 
     if mult_df_subs.size > 0:
@@ -73,61 +106,62 @@ def skip_multiple_dicoms(df: pd.DataFrame) -> pd.DataFrame:
             % mult_df_subs
         )
 
-    return df_copy[~df_copy["subject.label"].isin(mult_df_subs)]
+    return file_df[~file_df["subject.label"].isin(mult_df_subs)]
 
 
 def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     """Determines which acquisitions should be bidsified and adds columns containing
     appropriate reproin labels, as well as fmap, rec, run and sbref info. For acquisitions
-    that won't be bidsified, adds '_ignore-BIDS' to the end o"""
-    out_df = file_df.copy()
+    that won't be bidsified, adds '_ignore-BIDS' to the end of reproin label."""
+    file_df = file_df.copy()
 
-    out_df = out_df[out_df["session.tags"].apply(lambda x: "bidsified" not in x)]
-    out_df = out_df[~out_df["acquisition.label"].str.endswith("_ignore-BIDS")]
-    out_df = skip_multiple_dicoms(out_df)
+    file_df = file_df[file_df["session.tags"].apply(lambda x: "bidsified" not in x)]
+    file_df = file_df[~file_df["acquisition.label"].str.endswith("_ignore-BIDS")]
+    file_df = skip_multiple_dicoms(file_df)
 
     ##### Skipping spec spec2nii gear. Remmeber to remove these lines!!!!!
-    out_df = out_df[
-        out_df["file.classification.Intent"].apply(
+    file_df = file_df[
+        file_df["file.classification.Intent"].apply(
             lambda x: bool(x) and "Spectroscopy" not in x
         )
     ]
     #####
 
-    dcm_df = out_df[out_df["file.type"] == "dicom"]
+    dcm_df = file_df[file_df["file.type"] == "dicom"]
 
     if dcm_df.empty:
         log.info("No acquisitions were found that need to be bidsified.")
         sys.exit(0)
 
     reproin_mapping = dcm_df.set_index("acquisition.id").apply(reproin_filter, axis=1)
-    out_df["reproin"] = out_df["acquisition.id"].map(reproin_mapping)
+    reproin_mapping = reproin_mapping[~reproin_mapping.index.duplicated(keep="first")]
+    file_df["reproin"] = file_df["acquisition.id"].map(reproin_mapping)
 
-    out_df = check_nifti_presence(out_df)
+    file_df = check_nifti_presence(file_df)
 
-    out_df = (
-        out_df.groupby("session.id")[out_df.columns]
+    file_df = (
+        file_df.groupby("session.id")[file_df.columns]
         .apply(add_fmap)
         .reset_index(drop=True)
     )
-    out_df = out_df[out_df["file.type"] == "dicom"]
-    out_df = (
-        out_df.groupby("session.id")[out_df.columns]
+    file_df = file_df[file_df["file.type"] == "dicom"]
+    file_df = (
+        file_df.groupby("session.id")[file_df.columns]
         .apply(add_rec)
         .reset_index(drop=True)
     )
-    out_df = (
-        out_df.groupby(["session.id", "reproin"])[out_df.columns]
+    file_df = (
+        file_df.groupby(["session.id", "reproin"])[file_df.columns]
         .apply(add_run)
         .reset_index(drop=True)
     )
-    out_df = (
-        out_df.groupby("session.id")[out_df.columns]
+    file_df = (
+        file_df.groupby("session.id")[file_df.columns]
         .apply(add_sbref)
         .reset_index(drop=True)
     )
 
-    return out_df
+    return file_df
 
 
 def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
@@ -184,34 +218,6 @@ def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
                 acq = client.get_acquisition(row["acquisition.id"])
                 acq.update({"label": row["reproin"]})
     return reproin_df
-
-
-def rename_sessions(df: pd.DataFrame()) -> None:
-    """Renames session to '01', or the next available number if existing sessions."""
-    df_relabel = df[df["session.label"] != "01"]
-
-    for sub_id in df_relabel["subject.id"].unique():
-        subject = client.get_subject(sub_id)
-        sub_sessions = subject.sessions()
-
-        if len(sub_sessions) == 1:
-            session = sub_sessions[0]
-
-            log.debug("Renaming session %s to 01" % (session.id,))
-            session.update({"label": "01"})
-        else:
-            sub_sessions_sorted = sorted(sub_sessions, key=lambda d: d.timestamp)
-            num_digits = len(str(len(sub_sessions_sorted)))
-            zero_pad = max(num_digits, 2)
-
-            for i, session in enumerate(sub_sessions_sorted, 1):
-                new_session_label = str(i).zfill(zero_pad)
-
-                if session.label != new_session_label:
-                    log.debug(
-                        "Renaming session %s to %s" % (session.id, new_session_label)
-                    )
-                    session.update({"label": new_session_label})
 
 
 def submit_bids_jobs(reproin_df: pd.DataFrame()):
@@ -280,18 +286,14 @@ def main():
 
     deid_project = client.lookup("joe_test/deid_joe")
     # deid_project = client.lookup("wbhi/deid")
-
-    try:
-        file_df = get_subjects(deid_project)
-    except (KeyError, NameError):
-        log.info("All sessions have already been bidsified. Exiting")
-        sys.exit(0)
-
+    file_df = get_subjects(deid_project)
     rename_sessions(file_df)
+
     file_df = classify(file_df)
     breakpoint()
     file_df = add_reproin(file_df)
     breakpoint()
+
     submit_bids_jobs(file_df)
     wait_for_jobs(deid_project)
     tag_and_email(deid_project)
