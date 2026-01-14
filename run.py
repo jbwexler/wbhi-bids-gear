@@ -42,7 +42,7 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     file_df["acquisition.timestamp"] = pd.to_datetime(
         file_df["acquisition.timestamp"], format="mixed", dayfirst=True
     )
-    file_df["sbref"] = None
+    file_df[["sbref", "error"]] = None
 
     file_df = file_df.groupby("subject.id").filter(
         lambda x: x["session.tags"].apply(lambda x: "bidsified" not in x).any()
@@ -164,8 +164,8 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df
 
 
-def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
-    reproin_df = classified_df.copy()
+def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
+    file_df = file_df.copy()
 
     #####################
     breakpoint()
@@ -202,11 +202,15 @@ def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
         "file.type",
     ]
     output_path = gtk_context.output_dir.joinpath("reproin_dryrun.csv")
-    reproin_df[columns].to_csv(output_path)
+    file_df[columns].to_csv(output_path)
     breakpoint()
     #####################
 
-    for name, ses_df in reproin_df.groupby("session.id"):
+    file_df = file_df.groupby("subject.id").filter(
+        lambda x: x["error"].apply(lambda x: not x).all()
+    )
+
+    for name, ses_df in file_df.groupby("session.id"):
         for i, row in ses_df.iterrows():
             if row["reproin"] != row["acquisition.label"]:
                 acq_match_df = ses_df[ses_df["acquisition.label"] == row["reproin"]]
@@ -217,12 +221,13 @@ def add_reproin(classified_df: pd.DataFrame) -> pd.DataFrame:
                     acq_tmp.update({"label": row["reproin"] + "_tmp"})
                 acq = client.get_acquisition(row["acquisition.id"])
                 acq.update({"label": row["reproin"]})
-    return reproin_df
+
+    return file_df
 
 
-def submit_bids_jobs(reproin_df: pd.DataFrame()):
+def submit_bids_jobs(file_df: pd.DataFrame()):
     curate_bids_gear = client.lookup("gears/curate-bids")
-    for sub_id in reproin_df["subject.id"].unique():
+    for sub_id in file_df["subject.id"].unique():
         subject = client.get_subject(sub_id)
         run_gear(curate_bids_gear, {}, {"reset": True}, subject)
 

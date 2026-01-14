@@ -67,7 +67,7 @@ def check_pydeface(file_df: pd.DataFrame) -> pd.DataFrame:
     if not no_pydeface_df.empty:
         log.warning(
             "The following subjects contain anatomical nifti(s) without the 'pydeface' tag: "
-            f"\n{no_pydeface_df['subject.label'].unique()}"
+            "\n%s" % no_pydeface_df['subject.label'].unique()
         )
 
     return file_df
@@ -93,8 +93,7 @@ def check_nifti_presence(file_df: pd.DataFrame) -> pd.DataFrame:
         pd.options.display.max_rows = 5000
         log.warning(
             "The following subjects contain acquisition(s) without nifti(s): "
-            #  f"\n{no_nii_df['subject.label'].unique()}"
-            f"\n{no_nii_df[['subject.label', 'acquisition.label']]}"
+            "\n%s" % no_nii_df[['subject.label', 'acquisition.label']]
         )
 
     return file_df
@@ -236,8 +235,10 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
             group[group["file.type"] == "bval"].empty
             or group[group["file.type"] == "bvec"].empty
         ):
-            log.error(f"Subject {subject} has diffusion fmaps without bval/bvecs.")
-            return None
+            err_msg = "Subject %s has diffusion fmaps without bval/bvecs." % subject
+            log.error(err_msg)
+            group.loc[:, "error"] = err_msg
+            return group
 
         group["fmap_acq"] = "dwi"
     elif not fmap_file_types["magnitude"].empty:
@@ -252,11 +253,15 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
     )[0]
 
     if non_phase["direction"].isnull().any():
-        log.error(f"Subject {subject} has acquisition with 2 epis but no direction.")
-        return None
+        err_msg = "Subject %s has acquisition with 2 epis but no direction." % subject
+        log.error(err_msg)
+        group.loc[:, "error"] = err_msg
+        return group
     elif len(non_phase) == 2 and len(non_phase["acquisition.id"].unique()) == 1:
-        log.error(f"Subject {subject} has 2 epis in one acquisition.")
-        return None
+        err_msg = "Subject %s has 2 epis in one acquisition." % subject
+        log.error(err_msg)
+        group.loc[:, "error"] = err_msg
+        return group
 
     reproin_mapping = non_phase.groupby("acquisition.id")[non_phase.columns].apply(
         lambda x: "fmap-epi_dir-" + x["direction"].iloc[0]
@@ -300,7 +305,11 @@ def add_fmap(df: pd.DataFrame()):
         )
     )
     if type_mapping.empty:
-        log.error(f"Subject {subject} doesn't contain any files with proper ImageType.")
+        err_msg = (
+            "Subject %s doesn't contain any files with proper ImageType." % subject
+        )
+        log.error(err_msg)
+        df.loc[:, "error"] = err_msg
         return df
     fmap_df["fmap_file_type"] = fmap_df["acquisition.id"].map(type_mapping)
     fmap_df = fmap_df[
@@ -323,10 +332,13 @@ def add_fmap(df: pd.DataFrame()):
             group.iloc[0]["acquisition.timestamp"]
             - group.iloc[-1]["acquisition.timestamp"]
         ) > FMAP_DELTA:
-            log.error(
-                f"Fieldmap group in subject {fmap_df.iloc[0]['subject.label']} spans more than {FMAP_DELTA}"
-            )
-            return None
+            err_msg = "Fieldmap group in subject %s spans more than %s" % (
+                    fmap_df.iloc[0]['subject.label'],
+                    FMAP_DELTA,
+                )
+            log.error(err_msg)
+            group.loc[:, "error"] = err_msg
+            return group
         elif (
             group["reproin_dict"]
             .apply(
@@ -350,24 +362,22 @@ def add_fmap(df: pd.DataFrame()):
         }
 
         if magnitude.empty and diffusion.empty and fmri.empty:
-            log.error(
-                f"Subject {subject} has fieldmap(s) with no magnitude, diffusion or fmri files."
-            )
-            return None
+            err_msg = "Subject %s has fieldmaps with no magnitude, diffusion or fmri files." % subject
+            log.error(err_msg)
+            group.loc[:, "error"] = err_msg
         elif sum((magnitude.empty, diffusion.empty, fmri.empty)) < 2:
-            log.error(
-                f"Subject {subject} has fieldmap(s) with more than one type of files."
-            )
-            return None
+            err_msg = "Subject %s has fieldmap(s) with more than one type of files." % subject
+            log.error(err_msg)
+            group.loc[:, "error"] = err_msg
         elif not magnitude.empty:
             if len(magnitude) > 2:
-                log.error(
-                    f"Subject {subject} has fieldmap(s) with > 2 magnitude files."
-                )
-                return None
+                err_msg = "Subject %s has fieldmap(s) with > 2 magnitude files." % subject
+                log.error(err_msg)
+                group.loc[:, "error"] = err_msg
             elif len(phase) > 2:
-                log.error(f"Subject {subject} has fieldmap(s) with > 2 phase files.")
-                return None
+                err_msg = "Subject %s has fieldmap(s) with > 2 phase files." % subject
+                log.error(err_msg)
+                group.loc[:, "error"] = err_msg
             elif len(phase) in (1, 2):
                 pattern = re.compile(
                     r"(?i)(spinecho|(^|[^a-zA-Z0-9])se($|[^a-zA-Z0-9])|(?-i:AP|PA))"
@@ -378,10 +388,9 @@ def add_fmap(df: pd.DataFrame()):
                 num_spinecho = len(magnitude[magnitude["spinecho"]])
 
                 if num_spinecho not in (0, len(magnitude)):
-                    log.error(
-                        f"Subject {subject} has magnitude(s) that are both spinecho and not."
-                    )
-                    return None
+                    err_msg = "Subject %s has magnitude(s) that are both spinecho and not." % subject
+                    log.error(err_msg)
+                    group.loc[:, "error"] = err_msg
                 elif num_spinecho == len(magnitude) and (
                     len(magnitude[magnitude["acquisition.label"].str.contains("AP")])
                     == len(magnitude[magnitude["acquisition.label"].str.contains("PA")])
@@ -389,10 +398,9 @@ def add_fmap(df: pd.DataFrame()):
                     # Case 4
                     group = get_case_four(group, fmap_file_types, subject)
                 elif magnitude["magnitude_type"].isna().any():
-                    log.error(
-                        f"Subject {subject} has magnitude(s) not matching expected filenames."
-                    )
-                    return None
+                    err_msg = "Subject %s has magnitude(s) not matching expected filenames." % subject
+                    log.error(err_msg)
+                    group.loc[:, "error"] = err_msg
                 elif len(phase) == 1:
                     # Case 1
                     group["fmap_acq"] = "phasediff"
@@ -407,8 +415,6 @@ def add_fmap(df: pd.DataFrame()):
             # Case 4
             group = get_case_four(group, fmap_file_types, subject)
 
-        if group is None:
-            return None
         fmap_df.update(group)
 
     if fmap_df["fmap_acq"].nunique() > 1:
@@ -446,29 +452,28 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
 
     subject = df["subject.label"].iloc[0]
 
-    for i, groupby in rec_df.groupby(["reproin", "group"]):
-        if len(groupby) == 1:
+    for i, group in rec_df.groupby(["reproin", "group"]):
+        if len(group) == 1:
             continue
 
-        REC_LIST.append(groupby)
+        REC_LIST.append(group)
 
-        if len(groupby) > 2:
-            log.error(
-                f"Subject {subject} has more than 2 acquisitions in the same rec group."
-            )
-            continue  # return None
-        elif len(groupby) == 2:
-            groupby["norm"] = groupby["file.info.header.dicom.ImageType"].apply(
+        if len(group) > 2:
+            err_msg = "Subject %s has more than 2 acquisitions in the same rec group." % subject
+            log.error(err_msg)
+            df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = err_msg
+        elif len(group) == 2:
+            group["norm"] = group["file.info.header.dicom.ImageType"].apply(
                 lambda x: x is not None and "NORM" in x
             )
 
-            if len(groupby[groupby["norm"]]) != 1:
-                log.error(
-                    f"Subject {subject} has a rec group with 0 or 2 NORM acquisitions"
-                )
-                continue  # return None
-            acq_id_update = groupby[groupby["norm"]]["acquisition.id"].iloc[0]
-            df.loc[df["acquisition.id"] == acq_id_update, "reproin"] += "_rec-norm"
+            if len(group[group["norm"]]) != 1:
+                err_msg = "Subject %s has a rec group with 0 or 2 NORM acquisitions" % subject
+                log.error(err_msg)
+                df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = err_msg
+            else:
+                acq_id_update = group[group["norm"]]["acquisition.id"].iloc[0]
+                df.loc[df["acquisition.id"] == acq_id_update, "reproin"] += "_rec-norm"
 
     return df
 
@@ -512,19 +517,21 @@ def add_sbref(df: pd.DataFrame()):
                     match["reproin"].iloc[0].removesuffix("SBRef") + "_SBRef"
                 )
             elif len(match) > 1:
-                log.error(
-                    "%s in subject %s should match exactly 1 bold image, but it matched 2: %s"
-                    % (
+                err_msg = (
+                    "%s in subject %s should match exactly 1 bold image, but it matched 2 %s" % (
                         sbref["acquisition.label"],
                         sbref["subject.label"],
                         match["acquisition.label"],
                     )
                 )
+                log.error(err_msg)
+                df.loc[i, "error"] = err_msg 
             else:
-                log.error(
-                    "%s in subject %s didn't match any bold images"
-                    % (sbref["acquisition.label"], sbref["subject.label"])
-                )
+                err_msg = "%s in subject %s didn't match any bold images." % (
+                        sbref["acquisition.label"],
+                        sbref["subject.label"],
+                    )
+                log.error(err_msg)
+                df.loc[i, "error"] = err_msg 
 
-                return None
     return df
