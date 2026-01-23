@@ -42,7 +42,8 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     file_df["acquisition.timestamp"] = pd.to_datetime(
         file_df["acquisition.timestamp"], format="mixed", dayfirst=True
     )
-    file_df[["sbref", "error"]] = None
+    file_df["sbref"] = None
+    file_df["error"] = ""
 
     file_df = file_df.groupby("subject.id").filter(
         lambda x: x["session.tags"].apply(lambda x: "bidsified" not in x).any()
@@ -166,45 +167,6 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
 
 def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df.copy()
-
-    #####################
-    breakpoint()
-    rec_df_list = []
-    rec_acq_list = []
-    for group in REC_LIST:
-        match = False
-        for acq_df in rec_acq_list:
-            if group["acquisition.label"].equals(acq_df):
-                match = True
-                break
-        if match:
-            continue
-
-        rec_df_list.append(group)
-        rec_acq_list.append(group["acquisition.label"])
-
-    breakpoint()
-    rec_df = pd.concat(rec_df_list)
-
-    output_path = gtk_context.output_dir.joinpath("rec_list.csv")
-    rec_df.to_csv(output_path)
-
-    columns = [
-        "subject.label",
-        "reproin",
-        "file.info.header.dicom.SeriesDescription",
-        "file.info.header.dicom.ImageType",
-        "file.classification.Intent",
-        "file.classification.Measurement",
-        "file.classification.Features",
-        "acquisition.timestamp",
-        "file.modality",
-        "file.type",
-    ]
-    output_path = gtk_context.output_dir.joinpath("reproin_dryrun.csv")
-    file_df[columns].to_csv(output_path)
-    breakpoint()
-    #####################
 
     file_df = file_df.groupby("subject.id").filter(
         lambda x: x["error"].apply(lambda x: not x).all()
