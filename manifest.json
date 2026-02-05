@@ -36,7 +36,12 @@
             "default": false,
             "description": "Log debug messages",
             "type": "boolean"
-        }
+        },
+	"test_mode": {
+            "default": false,
+	    "description": "Use joe_test group instead of wbhi.",
+	    "type": "boolean"
+	}
     },
     "command": "python run.py"
 }

@@ -16,7 +16,6 @@ from utils.reproin import (
     add_fmap,
     add_run,
     add_rec,
-    REC_LIST,
 )
 from utils.flywheel import create_view_df, send_email, run_gear, mv_session
 from utils.constants import WAIT_TIMEOUT, DATAVIEW_COLUMNS
@@ -236,10 +235,9 @@ def tag_and_email(project: ProjectOutput) -> None:
     )
 
 
-def mv_bidsified(project: ProjectOutput) -> None:
-    dst_project = client.lookup("wbhi/staging")
+def mv_bidsified(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
     columns = ["session.id", "session.tags"]
-    df = create_view_df(project, columns, client, container_type="session")
+    df = create_view_df(src_project, columns, client, container_type="session")
     bidsified_df = df[df["session.tags"].apply(lambda x: "bidsified" in x)]
 
     for i, ses_id in bidsified_df["session.id"].items():
@@ -250,21 +248,25 @@ def mv_bidsified(project: ProjectOutput) -> None:
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
+    
+    if config["test_mode"]:
+        group = "joe_test"
+    else:
+        group = "wbhi"
 
-    deid_project = client.lookup("joe_test/deid_joe")
-    # deid_project = client.lookup("wbhi/deid")
+    deid_project = client.lookup(f"{group}/deid")
     file_df = get_subjects(deid_project)
     rename_sessions(file_df)
 
     file_df = classify(file_df)
-    breakpoint()
     file_df = add_reproin(file_df)
-    breakpoint()
 
     submit_bids_jobs(file_df)
     wait_for_jobs(deid_project)
     tag_and_email(deid_project)
-    mv_bidsified(deid_project)
+
+    staging_project = client.lookup(f"{group}/staging")
+    mv_bidsified(deid_project, staging_project)
 
 
 if __name__ == "__main__":
