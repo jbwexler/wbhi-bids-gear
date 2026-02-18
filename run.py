@@ -16,6 +16,7 @@ from utils.reproin import (
     add_fmap,
     add_run,
     add_rec,
+    check_duplicate_reproin,
 )
 from utils.flywheel import create_view_df, send_email, run_gear, mv_session
 from utils.constants import WAIT_TIMEOUT, DATAVIEW_COLUMNS
@@ -170,6 +171,11 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df.groupby("subject.id").filter(
         lambda x: x["error"].apply(lambda x: not x).all()
     )
+    file_df = (
+        file_df.groupby("session.id")[file_df.columns]
+        .apply(check_duplicate_reproin)
+        .reset_index(drop=True)
+    )
 
     for name, ses_df in file_df.groupby("session.id"):
         for i, row in ses_df.iterrows():
@@ -248,7 +254,7 @@ def mv_bidsified(src_project: ProjectOutput, dst_project: ProjectOutput) -> None
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
-    
+
     if config["test_mode"]:
         group = "joe_test"
     else:

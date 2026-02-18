@@ -468,6 +468,11 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
     for i, group in rec_df.groupby(["reproin", "group"]):
         if len(group) == 1:
             continue
+        ### Remove these lines once we figure out how to handle reconstructions
+        else:
+            log.info("For now, skipping sessions with potential reconstructions.")
+            return
+        ###
 
         REC_LIST.append(group)
 
@@ -554,8 +559,24 @@ def add_sbref(df: pd.DataFrame()):
                     sbref["acquisition.label"],
                     sbref["subject.label"],
                 )
-                print(func_dwi[["subject.label", "acquisition.label", "timedelta"]])
                 log.error(err_msg)
                 df.loc[i, "error"] = err_msg
+
+    return df
+
+
+def check_duplicate_reproin(df: pd.DataFrame()) -> pd.DataFrame():
+    """Returns df if there are not duplicates in the 'reproin' column"""
+    df = df.copy()
+    duplicated = df[df["reproin"].duplicated()]
+
+    if not duplicated.empty:
+        subject_label = df["subject.label"].iloc[0]
+        err_msg = "Subject %s contains a session with duplicate reproins: %s" % (
+            subject_label,
+            duplicated,
+        )
+        log.error(err_msg)
+        return None
 
     return df
