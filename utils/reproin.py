@@ -17,8 +17,6 @@ from utils.constants import (
 
 log = logging.getLogger(__name__)
 
-REC_LIST = []
-
 
 def pydeface_filter(df: pd.DataFrame) -> bool:
     """Returns True if any acquisitions containing a Structural T1 or T2 dicom
@@ -114,7 +112,7 @@ def reproin_filter(row: pd.Series) -> str:
     if image_type and "derived" in image_type:
         return label_ignore
     try:
-        validator = parse_series_spec(label)
+        validator = parse_series_spec(label.lower())
     except IndexError:
         validator = {}
     if (
@@ -129,7 +127,9 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
         elif validator["datatype"] == "func":
             if "task" in validator and (
-                "rest" in validator["task"] or validator["task"] == "rs"
+                "rest" in validator["task"]
+                or "rsfmri" in validator["task"]
+                or validator["task"] == "rs"
             ):
                 return re.sub("task-.*?(_|$)", r"task-rest\1", label_re)
             else:
@@ -142,8 +142,6 @@ def reproin_filter(row: pd.Series) -> str:
 
         if label.startswith("GOBRAIN_"):
             return label_ignore
-        elif label == "t2_tse_tra_hi-res_hippocampus":
-            return "anat-T2w_acq-hippocampus"
         elif label_re.endswith(("PhysioLog", "setter", "TENSOR")):
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
@@ -156,6 +154,8 @@ def reproin_filter(row: pd.Series) -> str:
             elif "T2" in measurement:
                 if features and "FLAIR" in features:
                     return "anat-FLAIR"
+                elif "hippocampus" in label.lower():
+                    return "anat-T2w_acq-hippocampus"
                 else:
                     return "anat-T2w"
             elif "Diffusion" in measurement:
@@ -195,7 +195,7 @@ def classify_fmap_acq(image_type_list: list) -> str:
 
 def get_runs(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    run_df = df.sort_values(by="acquisition.timestamp")
+    run_df = df.sort_values(by="acq_datetime")
     n_digits = max(2, len(str(run_df.shape[0])))
     padded_list = [str(n).zfill(n_digits) for n in range(1, run_df.shape[0] + 1)]
     run_df.insert(run_df.shape[1], "run", padded_list)
@@ -204,9 +204,7 @@ def get_runs(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_fmap_runs(df: pd.DataFrame()) -> pd.DataFrame():
     df = df.copy()
-    group_df = df[["acquisition.timestamp", "group"]].drop_duplicates(
-        subset="group", keep="first"
-    )
+    group_df = df[["acq_datetime", "group"]].drop_duplicates(subset="group", keep="first")
     if len(group_df) > 1:
         group_mapping = get_runs(group_df).set_index("group")
         df["run"] = df["group"].map(group_mapping["run"])
@@ -219,8 +217,8 @@ def timestamp_group(df: pd.DataFrame, delta: timedelta) -> pd.DataFrame:
     """Groups rows in a dataframe that fall within a time delta. Returns a df with
     added 'time_diff' and 'group' columns"""
     df = df.copy()
-    df = df.sort_values(by="acquisition.timestamp")
-    df["time_diff"] = df["acquisition.timestamp"].diff().fillna(pd.Timedelta(seconds=0))
+    df = df.sort_values(by="acq_datetime")
+    df["time_diff"] = df["acq_datetime"].diff().fillna(pd.Timedelta(seconds=0))
     df["group"] = (df["time_diff"] > delta).cumsum()
     return df
 
@@ -328,10 +326,7 @@ def add_fmap(df: pd.DataFrame()):
 
     # Determine bids fmap case and assign reproin labels
     for name, group in fmap_df.groupby("group"):
-        if (
-            group.iloc[0]["acquisition.timestamp"]
-            - group.iloc[-1]["acquisition.timestamp"]
-        ) > FMAP_DELTA:
+        if (group.iloc[0]["acq_datetime"] - group.iloc[-1]["acq_datetime"]) > FMAP_DELTA:
             err_msg = "Fieldmap group in subject %s spans more than %s" % (
                 fmap_df.iloc[0]["subject.label"],
                 FMAP_DELTA,
@@ -474,8 +469,6 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
             return
         ###
 
-        REC_LIST.append(group)
-
         if len(group) > 2:
             err_msg = (
                 "Subject %s has more than 2 acquisitions in the same rec group."
@@ -530,9 +523,7 @@ def add_sbref(df: pd.DataFrame()):
         ]
 
         for i, sbref in sbref_df.iterrows():
-            func_dwi["timedelta"] = (
-                sbref["acquisition.timestamp"] - func_dwi["acquisition.timestamp"]
-            )
+            func_dwi["timedelta"] = sbref["acq_datetime"] - func_dwi["acq_datetime"]
             match = func_dwi[
                 (func_dwi["timedelta"] <= SBREF_DELTA)
                 & (func_dwi["timedelta"] >= -SBREF_DELTA)

@@ -39,9 +39,7 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
         log.info("No subjects were found in deid project.")
         sys.exit(0)
 
-    file_df["acquisition.timestamp"] = pd.to_datetime(
-        file_df["acquisition.timestamp"], format="mixed", dayfirst=True
-    )
+    file_df["acq_datetime"] = get_acq_datetime(file_df)
     file_df["sbref"] = None
     file_df["error"] = ""
 
@@ -56,6 +54,36 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
         sys.exit(0)
 
     return file_df
+
+
+def get_acq_datetime(df: pd.DataFrame()) -> pd.Series():
+    """Returns a Series containing the acquisition datetime."""
+    df = df.copy()
+
+    df["acq_datetime"] = df["file.info.header.dicom.AcquisitionDateTime"]
+
+    acq_date_plus_time = df["file.info.header.dicom.AcquisitionDate"].fillna(
+        ""
+    ) + df["file.info.header.dicom.AcquisitionTime"].fillna("")
+    df["acq_datetime"] = (
+        df["acq_datetime"].replace("", pd.NA).fillna(acq_date_plus_time)
+    )
+
+    df["acq_datetime"] = pd.to_datetime(
+        df["acq_datetime"], format="%Y%m%d%H%M%S.%f"
+    )
+
+    df["acquisition.timestamp"] = pd.to_datetime(
+        df["acquisition.timestamp"], format="mixed", dayfirst=True
+    )
+    df["acq_datetime"] = df["acq_datetime"].replace("", pd.NA)
+    mask = df["acq_datetime"].isna() & (df["file.type"] == "dicom")
+    df.loc[mask, "acq_datetime"] = df.loc[mask, "acquisition.timestamp"].dt.tz_localize(None)
+
+    df["acq_datetime"] = df["acquisition.id"].map(
+        df[df["file.type"] == "dicom"].groupby("acquisition.id")["acq_datetime"].first()
+    )
+    return df["acq_datetime"]
 
 
 def rename_sessions(df: pd.DataFrame()) -> None:
@@ -151,6 +179,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
         .apply(add_rec)
         .reset_index(drop=True)
     )
+    breakpoint()
     file_df = (
         file_df.groupby(["session.id", "reproin"])[file_df.columns]
         .apply(add_run)
@@ -217,9 +246,9 @@ def tag_and_email(project: ProjectOutput) -> None:
     failed_job_subjects = [job.parents.subject for job in failed_jobs]
     for sub_id in failed_job_subjects:
         sub = client.get_subject(sub_id)
-    for ses in sub.sessions():
-        if "bids-failed" not in ses.tags:
-            ses.add_tag("bids-failed")
+        for ses in sub.sessions():
+            if "bids-failed" not in ses.tags:
+                ses.add_tag("bids-failed")
 
     complete_q = f"parents.project={project.id},state=complete,gear_info.name=curate-bids,created>{cutoff}"
     complete_jobs = client.jobs.find(complete_q)
