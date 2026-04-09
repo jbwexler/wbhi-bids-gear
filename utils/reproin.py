@@ -97,6 +97,25 @@ def check_nifti_presence(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df
 
 
+def check_anat_presence(file_df: pd.DataFrame) -> pd.DataFrame:
+    """Removes sessions that have no anatomical acquisitions"""
+    file_df = file_df.copy()
+
+    no_anat_df = file_df.groupby("session.id").filter(
+        lambda x: not x["reproin"].str.startswith("anat", na=False).any()
+    )
+
+    file_df = file_df[~file_df["session.id"].isin(no_anat_df["session.id"].unique())]
+
+    if not no_anat_df.empty:
+        log.warning(
+            "The following sessions have no anatomical acquisitions and will be skipped: "
+            "\n%s" % no_anat_df["session.id"].unique()
+        )
+
+    return file_df
+
+
 def reproin_filter(row: pd.Series) -> str:
     label = row["acquisition.label"]
     if row["file.type"] != "dicom":

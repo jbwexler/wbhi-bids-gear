@@ -11,6 +11,7 @@ from flywheel import ProjectOutput
 from utils.reproin import (
     check_pydeface,
     check_nifti_presence,
+    check_anat_presence,
     reproin_filter,
     add_sbref,
     add_fmap,
@@ -167,6 +168,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df["reproin"] = file_df["acquisition.id"].map(reproin_mapping)
 
     file_df = check_nifti_presence(file_df)
+    file_df = check_anat_presence(file_df)
 
     file_df = (
         file_df.groupby("session.id")[file_df.columns]
@@ -179,7 +181,6 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
         .apply(add_rec)
         .reset_index(drop=True)
     )
-    breakpoint()
     file_df = (
         file_df.groupby(["session.id", "reproin"])[file_df.columns]
         .apply(add_run)
