@@ -39,7 +39,7 @@
         },
 	"test_mode": {
             "default": false,
-	    "description": "Use joe_test group instead of wbhi.",
+	    "description": "Use joe_test group instead of wbhi, and use/generate .pkl file for dataview.",
 	    "type": "boolean"
 	}
     },

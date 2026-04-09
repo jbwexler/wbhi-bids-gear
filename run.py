@@ -2,6 +2,7 @@
 
 import flywheel_gear_toolkit
 import logging
+import os
 import pip
 import sys
 from datetime import datetime, timedelta
@@ -29,12 +30,21 @@ from wbhiutils.constants import (  # noqa: E402
 
 log = logging.getLogger(__name__)
 
+PKL_PATH = "output/file_df.pkl"
+
 
 def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     """Returns a df of files from subjects that have not yet been bidsified
     and are ready to be."""
 
-    file_df = create_view_df(project, DATAVIEW_COLUMNS.keys(), client)
+    if config.get("test_mode") and os.path.exists(PKL_PATH):
+        log.info(f"Reusing df from {PKL_PATH}.")
+        file_df = pd.read_pickle(PKL_PATH)
+    else:
+        file_df = create_view_df(project, DATAVIEW_COLUMNS.keys(), client)
+        if config.get("test_mode"):
+            log.info(f"Saving df as {PKL_PATH}.")
+            file_df.to_pickle(PKL_PATH)
 
     if file_df.empty:
         log.info("No subjects were found in deid project.")
