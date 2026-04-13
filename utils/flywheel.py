@@ -88,5 +88,4 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
             log.exception(
                 f"Error moving subject {session.subject.label}/{session.label}"
                 "to {dst_project.label}"
-
             )

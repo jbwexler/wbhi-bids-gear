@@ -19,6 +19,7 @@ from utils.reproin import (
     add_run,
     add_rec,
     check_duplicate_reproin,
+    rm_acq_labels,
 )
 from utils.flywheel import create_view_df, send_email, run_gear, mv_session
 from utils.constants import WAIT_TIMEOUT, DATAVIEW_COLUMNS
@@ -34,8 +35,7 @@ PKL_PATH = "output/file_df.pkl"
 
 
 def get_subjects(project: ProjectOutput) -> pd.DataFrame:
-    """Returns a df of files from subjects that have not yet been bidsified
-    and are ready to be."""
+    """Returns a df of files from subjects that are ready to be bidsified."""
 
     if config.get("test_mode") and os.path.exists(PKL_PATH):
         log.info(f"Reusing df from {PKL_PATH}.")
@@ -54,10 +54,6 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     file_df["sbref"] = None
     file_df["error"] = ""
 
-    file_df = file_df.groupby("subject.id").filter(
-        lambda x: x["session.tags"].apply(lambda x: "bidsified" not in x).any()
-    )
-
     file_df = check_pydeface(file_df)
 
     if file_df.empty:
@@ -73,23 +69,23 @@ def get_acq_datetime(df: pd.DataFrame()) -> pd.Series():
 
     df["acq_datetime"] = df["file.info.header.dicom.AcquisitionDateTime"]
 
-    acq_date_plus_time = df["file.info.header.dicom.AcquisitionDate"].fillna(
-        ""
-    ) + df["file.info.header.dicom.AcquisitionTime"].fillna("")
+    acq_date_plus_time = df["file.info.header.dicom.AcquisitionDate"].fillna("") + df[
+        "file.info.header.dicom.AcquisitionTime"
+    ].fillna("")
     df["acq_datetime"] = (
         df["acq_datetime"].replace("", pd.NA).fillna(acq_date_plus_time)
     )
 
-    df["acq_datetime"] = pd.to_datetime(
-        df["acq_datetime"], format="%Y%m%d%H%M%S.%f"
-    )
+    df["acq_datetime"] = pd.to_datetime(df["acq_datetime"], format="%Y%m%d%H%M%S.%f")
 
     df["acquisition.timestamp"] = pd.to_datetime(
         df["acquisition.timestamp"], format="mixed", dayfirst=True
     )
     df["acq_datetime"] = df["acq_datetime"].replace("", pd.NA)
     mask = df["acq_datetime"].isna() & (df["file.type"] == "dicom")
-    df.loc[mask, "acq_datetime"] = df.loc[mask, "acquisition.timestamp"].dt.tz_localize(None)
+    df.loc[mask, "acq_datetime"] = df.loc[mask, "acquisition.timestamp"].dt.tz_localize(
+        None
+    )
 
     df["acq_datetime"] = df["acquisition.id"].map(
         df[df["file.type"] == "dicom"].groupby("acquisition.id")["acq_datetime"].first()
@@ -173,7 +169,13 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
         log.info("No acquisitions were found that need to be bidsified.")
         sys.exit(0)
 
-    reproin_mapping = dcm_df.set_index("acquisition.id").apply(reproin_filter, axis=1)
+    dcm_df["reproin"] = dcm_df.apply(reproin_filter, axis=1)
+    dcm_df = (
+        dcm_df.groupby("session.id")[dcm_df.columns]
+        .apply(rm_acq_labels)
+        .reset_index(drop=True)
+    )
+    reproin_mapping = dcm_df.set_index("acquisition.id")["reproin"]
     reproin_mapping = reproin_mapping[~reproin_mapping.index.duplicated(keep="first")]
     file_df["reproin"] = file_df["acquisition.id"].map(reproin_mapping)
 

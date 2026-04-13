@@ -197,6 +197,43 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
 
 
+def rm_acq_labels(df: pd.DataFrame()) -> pd.DataFrame():
+    """Removes certain blacklisted acq labels from reproin columns when appropriate."""
+    df = df.copy()
+
+    df["reproin_no_acq"] = df["reproin"].apply(
+        lambda x: re.sub("_acq-.*?(_|$)", r"\1", x)
+    )
+    if df["reproin"].equals(df["reproin_no_acq"]):
+        return df
+
+    df["validator"] = df["reproin"].apply(lambda x: parse_series_spec(x.lower()))
+    df["acq"] = df["validator"].apply(lambda x: x.get("acq"))
+    df["datatype_suffix"] = df["validator"].apply(lambda x: x.get("datatype_suffix"))
+    group_df = df.groupby("reproin_no_acq")[df.columns]
+
+    for _, group in group_df:
+        mm_matches = group[group["acq"].str.match(r"^\d+[.p]?\d+mm$", na=False)]
+        if not mm_matches.empty:
+            if (len(mm_matches) == len(group)) and (mm_matches["acq"].nunique() == 1):
+                df.loc[mm_matches.index, "reproin"] = mm_matches["reproin_no_acq"]
+            continue
+
+        mprage_matches = group[
+            (group["acq"] == "mprage") & (group["datatype_suffix"] == "t1w")
+        ]
+        space_matches = group[
+            (group["acq"] == "space") & (group["datatype_suffix"] == "t2w")
+        ]
+
+        for matches in (mprage_matches, space_matches):
+            if not matches.empty:
+                if len(matches) == len(group):
+                    df.loc[matches.index, "reproin"] = matches["reproin_no_acq"]
+
+    return df
+
+
 def classify_fmap_acq(image_type_list: list) -> str:
     """Determines the type of fieldmap file (phase, magnitude or diffusion) based on
     the presence of corresponding strings in the ImageType dict."""
@@ -223,7 +260,9 @@ def get_runs(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_fmap_runs(df: pd.DataFrame()) -> pd.DataFrame():
     df = df.copy()
-    group_df = df[["acq_datetime", "group"]].drop_duplicates(subset="group", keep="first")
+    group_df = df[["acq_datetime", "group"]].drop_duplicates(
+        subset="group", keep="first"
+    )
     if len(group_df) > 1:
         group_mapping = get_runs(group_df).set_index("group")
         df["run"] = df["group"].map(group_mapping["run"])
@@ -345,7 +384,9 @@ def add_fmap(df: pd.DataFrame()):
 
     # Determine bids fmap case and assign reproin labels
     for name, group in fmap_df.groupby("group"):
-        if (group.iloc[0]["acq_datetime"] - group.iloc[-1]["acq_datetime"]) > FMAP_DELTA:
+        if (
+            group.iloc[0]["acq_datetime"] - group.iloc[-1]["acq_datetime"]
+        ) > FMAP_DELTA:
             err_msg = "Fieldmap group in subject %s spans more than %s" % (
                 fmap_df.iloc[0]["subject.label"],
                 FMAP_DELTA,
