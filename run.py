@@ -12,6 +12,7 @@ from flywheel import ProjectOutput
 from utils.reproin import (
     check_pydeface,
     check_nifti_presence,
+    check_asl_and_spectroscopy,
     check_anat_presence,
     reproin_filter,
     add_sbref,
@@ -49,6 +50,12 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     if file_df.empty:
         log.info("No subjects were found in deid project.")
         sys.exit(0)
+
+    bidsified_sessions = file_df[
+        file_df["session.tags"].apply(lambda x: "bidsified" in x)
+    ]["session.id"].unique()
+    for session_id in bidsified_sessions:
+        client.get_session(session_id).delete_tag("bidsified")
 
     file_df["acq_datetime"] = get_acq_datetime(file_df)
     file_df["sbref"] = None
@@ -151,17 +158,8 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     that won't be bidsified, adds '_ignore-BIDS' to the end of reproin label."""
     file_df = file_df.copy()
 
-    file_df = file_df[file_df["session.tags"].apply(lambda x: "bidsified" not in x)]
     file_df = file_df[~file_df["acquisition.label"].str.endswith("_ignore-BIDS")]
     file_df = skip_multiple_dicoms(file_df)
-
-    ##### Skipping spec spec2nii gear. Remmeber to remove these lines!!!!!
-    file_df = file_df[
-        file_df["file.classification.Intent"].apply(
-            lambda x: bool(x) and "Spectroscopy" not in x
-        )
-    ]
-    #####
 
     dcm_df = file_df[file_df["file.type"] == "dicom"]
 
@@ -180,6 +178,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df["reproin"] = file_df["acquisition.id"].map(reproin_mapping)
 
     file_df = check_nifti_presence(file_df)
+    file_df = check_asl_and_spectroscopy(file_df)
     file_df = check_anat_presence(file_df)
 
     file_df = (
@@ -262,6 +261,8 @@ def tag_and_email(project: ProjectOutput) -> None:
         for ses in sub.sessions():
             if "bids-failed" not in ses.tags:
                 ses.add_tag("bids-failed")
+            if "bidsified" in ses.tags:
+                ses.delete_tag("bidsified")
 
     complete_q = f"parents.project={project.id},state=complete,gear_info.name=curate-bids,created>{cutoff}"
     complete_jobs = client.jobs.find(complete_q)
@@ -286,7 +287,9 @@ def tag_and_email(project: ProjectOutput) -> None:
 def mv_bidsified(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
     columns = ["session.id", "session.tags"]
     df = create_view_df(src_project, columns, client, container_type="session")
-    bidsified_df = df[df["session.tags"].apply(lambda x: "bidsified" in x)]
+    bidsified_df = df[
+        df["session.tags"].apply(lambda x: "bidsified" in x and "bids-failed" not in x)
+    ]
 
     for i, ses_id in bidsified_df["session.id"].items():
         session = client.get_session(ses_id)

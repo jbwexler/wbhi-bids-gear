@@ -97,6 +97,32 @@ def check_nifti_presence(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df
 
 
+def check_asl_and_spectroscopy(file_df: pd.DataFrame) -> pd.DataFrame:
+    """Removes subjects that have any ASL/perfusion or spectroscopy acquisitions"""
+    file_df = file_df.copy()
+
+    excluded_df = file_df.groupby("subject.label").filter(
+        lambda x: (
+            x["reproin"].str.startswith("asl", na=False).any()
+            or x["file.classification.Intent"]
+            .apply(lambda i: isinstance(i, list) and "Spectroscopy" in i)
+            .any()
+        )
+    )
+
+    file_df = file_df[
+        ~file_df["subject.label"].isin(excluded_df["subject.label"].unique())
+    ]
+
+    if not excluded_df.empty:
+        log.warning(
+            "The following subjects have ASL/perfusion or spectroscopy acquisitions and will be skipped: "
+            "\n%s" % excluded_df["subject.label"].unique()
+        )
+
+    return file_df
+
+
 def check_anat_presence(file_df: pd.DataFrame) -> pd.DataFrame:
     """Removes sessions that have no anatomical acquisitions"""
     file_df = file_df.copy()
@@ -165,25 +191,28 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
+        elif label.startswith("SE_DISTORTION"):
+            return "fmap"
         elif measurement and "Perfusion" in measurement:
             return "asl"
-        elif measurement and intent and "Structural" in intent:
-            if "T1" in measurement:
-                return "anat-T1w"
-            elif "T2" in measurement:
-                if features and "FLAIR" in features:
-                    return "anat-FLAIR"
-                elif "hippocampus" in label.lower():
-                    return "anat-T2w_acq-hippocampus"
+        elif intent and "Structural" in intent:
+            if features and "FLAIR" in features:
+                return "anat-FLAIR"
+            elif measurement:
+                if "T1" in measurement:
+                    return "anat-T1w"
+                elif "T2" in measurement:
+                    if "hippocampus" in label.lower():
+                        return "anat-T2w_acq-hippocampus"
+                    else:
+                        return "anat-T2w"
+                elif "Diffusion" in measurement:
+                    if label_re.endswith(DWI_SUFFIXES_IGNORE):
+                        return label_ignore
+                    else:
+                        return "dwi"
                 else:
-                    return "anat-T2w"
-            elif "Diffusion" in measurement:
-                if label_re.endswith(DWI_SUFFIXES_IGNORE):
                     return label_ignore
-                else:
-                    return "dwi"
-            else:
-                return label_ignore
         elif (
             intent
             and "Functional" in intent
@@ -329,9 +358,10 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
 
 def add_fmap(df: pd.DataFrame()):
     df = df.copy()
+    ignore_df = df[df["reproin"].str.endswith("_ignore-BIDS", na=False)]
     df = df[~df["reproin"].str.endswith("_ignore-BIDS", na=False)]
     if df.empty:
-        return df
+        return ignore_df
 
     subject = df["subject.label"].iloc[0]
     fmap_df = df[df["file.modality"] == "MR"]
@@ -352,7 +382,7 @@ def add_fmap(df: pd.DataFrame()):
     fmap_df["reproin_dict"] = fmap_df["reproin"].apply(lambda x: parse_series_spec(x))
 
     if fmap_df.empty:
-        return df
+        return pd.concat([df, ignore_df]).reset_index(drop=True)
 
     # Determine fieldmap file types (magnitude, phase, etc.)
     type_mapping = fmap_df.groupby("acquisition.id")[fmap_df.columns].apply(
@@ -366,7 +396,7 @@ def add_fmap(df: pd.DataFrame()):
         )
         log.error(err_msg)
         df.loc[:, "error"] = err_msg
-        return df
+        return pd.concat([df, ignore_df]).reset_index(drop=True)
     fmap_df["fmap_file_type"] = fmap_df["acquisition.id"].map(type_mapping)
     fmap_df = fmap_df[
         fmap_df["file.type"].apply(lambda x: x in ("nifti", "bval", "bvec"))
@@ -393,7 +423,7 @@ def add_fmap(df: pd.DataFrame()):
             )
             log.error(err_msg)
             group.loc[:, "error"] = err_msg
-            return group
+            return pd.concat([group, ignore_df]).reset_index(drop=True)
         elif (
             group["reproin_dict"]
             .apply(
@@ -502,7 +532,7 @@ def add_fmap(df: pd.DataFrame()):
         ~df.index.isin(fmap_mapping.index), df.index.map(fmap_mapping)
     )
 
-    return df.reset_index()
+    return pd.concat([df.reset_index(), ignore_df]).reset_index(drop=True)
 
 
 def add_rec(df: pd.DataFrame) -> pd.DataFrame:
