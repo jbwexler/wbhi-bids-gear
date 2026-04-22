@@ -20,6 +20,17 @@ DATAVIEW_COLUMNS = {
     "file.info.header.dicom.AcquisitionDate": str,
     "file.info.header.dicom.AcquisitionDateTime": str,
     "file.info.header.dicom.ImageType": list,
+    "file.info.header.dicom.ManufacturersModelName": str,
+    "file.info.header.dicom.SoftwareVersions": str,
+    "file.info.header.dicom.ScanningSequenceSequenceVariant": str,
+    "file.info.header.dicom.SequenceName": str,
+    "file.info.header.dicom.SliceThickness": float,
+    "file.info.header.dicom.EchoTime": float,
+    "file.info.header.dicom.RepetitionTime": float,
+    "file.info.header.dicom.InversionTime": float,
+    "file.info.header.dicom.FlipAngle": float,
+    "file.info.header.dicom.BaseResolution": int,
+    "file.info.header.dicom.ParallelReductionFactorInPlane": float,
     "file.info.header.dicom_array.ImageType.0": list,
     "file.classification.Intent": list,
     "file.classification.Measurement": list,
@@ -32,6 +43,20 @@ DATAVIEW_COLUMNS = {
     "file.name": str,
     "acquisition.timestamp": str,
 }
+ACQ_PARAMS = (
+    "file.info.header.dicom.ImageType",
+    "file.info.header.dicom.ManufacturersModelName",
+    "file.info.header.dicom.SoftwareVersions",
+    "file.info.header.dicom.ScanningSequenceSequenceVariant",
+    "file.info.header.dicom.SequenceName",
+    "file.info.header.dicom.SliceThickness",
+    "file.info.header.dicom.EchoTime",
+    "file.info.header.dicom.RepetitionTime",
+    "file.info.header.dicom.InversionTime",
+    "file.info.header.dicom.FlipAngle",
+    "file.info.header.dicom.BaseResolution",
+    "file.info.header.dicom.ParallelReductionFactorInPlane",
+)
 ALLOWED_DATATYPES = ("func", "anat", "dwi", "fmap", "asl")
 FMAP_SUFFIXES = (
     "gre",

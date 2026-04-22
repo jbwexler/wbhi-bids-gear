@@ -7,6 +7,7 @@ import logging
 from datetime import timedelta
 from utils.constants import (
     ALLOWED_DATATYPES,
+    ACQ_PARAMS,
     SBREF_DELTA,
     FMAP_DELTA,
     REC_DELTA,
@@ -143,7 +144,10 @@ def check_anat_presence(file_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def reproin_filter(row: pd.Series) -> str:
-    label = row["acquisition.label"]
+    label = row["file.info.header.dicom.SeriesDescription"]
+    if not isinstance(label, str):
+        label = row["acquisition.label"]
+    label = label.lower()
     if row["file.type"] != "dicom":
         return label
 
@@ -157,7 +161,7 @@ def reproin_filter(row: pd.Series) -> str:
     if image_type and "derived" in image_type:
         return label_ignore
     try:
-        validator = parse_series_spec(label.lower())
+        validator = parse_series_spec(label)
     except IndexError:
         validator = {}
     if (
@@ -170,49 +174,50 @@ def reproin_filter(row: pd.Series) -> str:
     if validator:
         if validator["datatype"] not in ALLOWED_DATATYPES:
             return label_ignore
-        elif validator["datatype"] == "func":
-            if "task" in validator and (
-                "rest" in validator["task"]
-                or "rsfmri" in validator["task"]
-                or validator["task"] == "rs"
-            ):
-                return re.sub("task-.*?(_|$)", r"task-rest\1", label_re)
+        if validator["datatype"] == "func":
+            task = validator.get("task", "")
+            if "rest" in task or "rsfmri" in task or task == "rs":
+                validator["task"] = "rest"
             else:
                 return label_ignore
-        return label_re
+
+        new_label = validator["datatype"]
+        if validator.get("datatype_suffix") and validator["datatype_suffix"] != "None":
+            new_label += "-" + validator["datatype_suffix"]
+        if validator.get("task") and validator["task"] != "None":
+            new_label += "_task-" + validator["task"]
+        if validator.get("acq") and validator["acq"] != "None":
+            new_label += "_acq-" + validator["acq"]
+        return new_label
     else:
         measurement = row["file.classification.Measurement"]
         intent = row["file.classification.Intent"]
         features = row["file.classification.Features"]
 
-        if label.startswith("GOBRAIN_"):
+        if label.startswith("gobrain_"):
             return label_ignore
-        elif label_re.endswith(("PhysioLog", "setter", "TENSOR")):
+        elif label_re.endswith(("physiolog", "setter", "tensor")):
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
-        elif label.startswith("SE_DISTORTION"):
+        elif label.startswith("se_distortion"):
             return "fmap"
         elif measurement and "Perfusion" in measurement:
             return "asl"
         elif intent and "Structural" in intent:
             if features and "FLAIR" in features:
-                return "anat-FLAIR"
+                return "anat-flair"
             elif measurement:
                 if "T1" in measurement:
-                    return "anat-T1w"
+                    return "anat-t1w"
                 elif "T2" in measurement:
                     if "hippocampus" in label.lower():
-                        return "anat-T2w_acq-hippocampus"
+                        return "anat-t2w_acq-hippocampus"
                     else:
-                        return "anat-T2w"
+                        return "anat-t2w"
                 elif "Diffusion" in measurement:
-                    if label_re.endswith(DWI_SUFFIXES_IGNORE):
-                        return label_ignore
-                    else:
+                    if not label_re.endswith(DWI_SUFFIXES_IGNORE):
                         return "dwi"
-                else:
-                    return label_ignore
         elif (
             intent
             and "Functional" in intent
@@ -222,8 +227,8 @@ def reproin_filter(row: pd.Series) -> str:
             return "func_task-rest"
         elif intent and "Fieldmap" in intent:
             return "fmap"
-        else:
-            return label_ignore
+
+    return label_ignore
 
 
 def rm_acq_labels(df: pd.DataFrame()) -> pd.DataFrame():
@@ -333,9 +338,9 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
         non_phase = fmap_file_types["fmri"]
         group["fmap_acq"] = "bold"
 
-    non_phase["direction"] = non_phase["acquisition.label"].str.extract(
-        r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)"
-    )[0]
+    non_phase["direction"] = non_phase[
+        "file.info.header.dicom.SeriesDescription"
+    ].str.extract(r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)")[0]
 
     if non_phase["direction"].isnull().any():
         err_msg = "Subject %s has acquisition with 2 epis but no direction." % subject
@@ -474,9 +479,9 @@ def add_fmap(df: pd.DataFrame()):
                 pattern = re.compile(
                     r"(?i)(spinecho|(^|[^a-zA-Z0-9])se($|[^a-zA-Z0-9])|(?-i:AP|PA))"
                 )
-                magnitude.loc[:, "spinecho"] = magnitude["acquisition.label"].str.match(
-                    pattern
-                )
+                magnitude.loc[:, "spinecho"] = magnitude[
+                    "file.info.header.dicom.SeriesDescription"
+                ].str.match(pattern)
                 num_spinecho = len(magnitude[magnitude["spinecho"]])
 
                 if num_spinecho not in (0, len(magnitude)):
@@ -487,8 +492,20 @@ def add_fmap(df: pd.DataFrame()):
                     log.error(err_msg)
                     group.loc[:, "error"] = err_msg
                 elif num_spinecho == len(magnitude) and (
-                    len(magnitude[magnitude["acquisition.label"].str.contains("AP")])
-                    == len(magnitude[magnitude["acquisition.label"].str.contains("PA")])
+                    len(
+                        magnitude[
+                            magnitude[
+                                "file.info.header.dicom.SeriesDescription"
+                            ].str.contains("AP")
+                        ]
+                    )
+                    == len(
+                        magnitude[
+                            magnitude[
+                                "file.info.header.dicom.SeriesDescription"
+                            ].str.contains("PA")
+                        ]
+                    )
                 ):
                     # Case 4
                     group = get_case_four(group, fmap_file_types, subject)
@@ -589,27 +606,49 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_run(df: pd.DataFrame) -> pd.DataFrame:
-    skip_df = df[df["acquisition.label"].str.contains("sbref", case=False)]
+    skip_df = df[
+        df["file.info.header.dicom.SeriesDescription"].str.contains("sbref", case=False)
+    ]
     run_df = df[~df["file.file_id"].isin(skip_df["file.file_id"])]
 
     # TODO: Handle recs properly (make sure rec pairs get same run number)
     if run_df.shape[0] > 1:
         run_df = get_runs(run_df)
+
         if run_df["reproin"].iloc[[0]].str.startswith("fmap").item():
             run_df["reproin"] = run_df["reproin"] + "_" + run_df["run"]
         else:
+            unique_df = run_df.loc[:, ACQ_PARAMS].apply(
+                lambda col: col.map(lambda x: tuple(x) if isinstance(x, list) else x)
+            )
+            if len(unique_df.drop_duplicates()) > 1:
+                subject = df["subject.label"].iloc[0]
+                reproin = df["reproin"].iloc[0]
+                err_msg = (
+                    "Subject %s has runs with mismatched acquisition parameters for %s: %s"
+                    % (subject, reproin, list(unique_df.index))
+                )
+                log.error(err_msg)
+                df.loc[:, "error"] = err_msg
+                return df
+
             run_df["reproin"] = run_df["reproin"] + "_run-" + run_df["run"]
+
     return pd.concat([run_df, skip_df])
 
 
 def add_sbref(df: pd.DataFrame()):
     df = df.copy()
-    sbref_df = df[df["acquisition.label"].str.contains("sbref", case=False)]
+    sbref_df = df[
+        df["file.info.header.dicom.SeriesDescription"].str.contains("sbref", case=False)
+    ]
 
     if not sbref_df.empty:
         func_dwi = df[df["reproin"].str.startswith(("func", "dwi"))]
         func_dwi = func_dwi[
-            ~func_dwi["acquisition.label"].str.contains("sbref", case=False)
+            ~func_dwi["file.info.header.dicom.SeriesDescription"].str.contains(
+                "sbref", case=False
+            )
         ]
 
         for i, sbref in sbref_df.iterrows():
