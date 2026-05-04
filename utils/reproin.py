@@ -8,6 +8,8 @@ from datetime import timedelta
 from utils.constants import (
     ALLOWED_DATATYPES,
     ACQ_PARAMS,
+    ACQ_PARAMS_FALLBACK,
+    OPTIONAL_ACQ_PARAMS,
     SBREF_DELTA,
     FMAP_DELTA,
     REC_DELTA,
@@ -158,7 +160,7 @@ def reproin_filter(row: pd.Series) -> str:
         return label_ignore
     image_type = row["file.info.header.dicom.ImageType"]
     # to-do: add exception for mp2rage
-    if image_type and "derived" in image_type:
+    if image_type and "DERIVED" in image_type:
         return label_ignore
     try:
         validator = parse_series_spec(label)
@@ -211,7 +213,7 @@ def reproin_filter(row: pd.Series) -> str:
                 if "T1" in measurement:
                     return "anat-t1w"
                 elif "T2" in measurement:
-                    if "hippocampus" in label.lower():
+                    if "hippocampus" in label:
                         return "anat-t2w_acq-hippocampus"
                     else:
                         return "anat-t2w"
@@ -222,7 +224,7 @@ def reproin_filter(row: pd.Series) -> str:
             intent
             and "Functional" in intent
             and label
-            and ("rest" in label.lower() or "rsfmri" in label.lower())
+            and ("rest" in label or "rsfmri" in label)
         ):
             return "func_task-rest"
         elif intent and "Fieldmap" in intent:
@@ -558,7 +560,16 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
 
     if rec_df.empty:
         return df
-
+    """
+    has_derived = (
+        rec_df["file.info.header.dicom.ImageType"]
+        .apply(lambda x: x is not None and "DERIVED" in x)
+        .any()
+    )
+    if has_derived:
+        log.info("For now, skipping sessions with potential reconstructions.")
+        return
+    """
     rec_df = (
         rec_df.groupby("reproin")[rec_df.columns]
         .apply(lambda x: timestamp_group(x, REC_DELTA))
@@ -570,11 +581,6 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
     for i, group in rec_df.groupby(["reproin", "group"]):
         if len(group) == 1:
             continue
-        ### Remove these lines once we figure out how to handle reconstructions
-        else:
-            log.info("For now, skipping sessions with potential reconstructions.")
-            return
-        ###
 
         if len(group) > 2:
             err_msg = (
@@ -605,6 +611,31 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _is_empty(val) -> bool:
+    if isinstance(val, list):
+        return len(val) == 0
+    return pd.isna(val)
+
+
+def get_acq_params(row: pd.Series) -> pd.Series:
+    """Returns ACQ_PARAMS values for a row, falling back through any
+    ACQ_PARAMS_FALLBACK paths in order when the top-level field is empty.
+    Single-element lists are unwrapped so list-typed fallbacks (e.g.
+    InversionTimes) compare equal to scalar top-level fields."""
+    result = {}
+    for param in ACQ_PARAMS:
+        val = row.get(param)
+        if _is_empty(val):
+            for fallback in ACQ_PARAMS_FALLBACK.get(param, ()):
+                val = row.get(fallback)
+                if not _is_empty(val):
+                    break
+        if isinstance(val, list) and len(val) == 1:
+            val = val[0]
+        result[param] = val
+    return pd.Series(result)
+
+
 def add_run(df: pd.DataFrame) -> pd.DataFrame:
     skip_df = df[
         df["file.info.header.dicom.SeriesDescription"].str.contains("sbref", case=False)
@@ -618,12 +649,28 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
         if run_df["reproin"].iloc[[0]].str.startswith("fmap").item():
             run_df["reproin"] = run_df["reproin"] + "_" + run_df["run"]
         else:
-            unique_df = run_df.loc[:, ACQ_PARAMS].apply(
+            unique_df = run_df.apply(get_acq_params, axis=1)
+            subject = df["subject.label"].iloc[0]
+            reproin = df["reproin"].iloc[0]
+            empty_mask = unique_df.map(_is_empty)
+            missing_cols = [
+                c for c in empty_mask.columns[empty_mask.any()].tolist()
+                if c not in OPTIONAL_ACQ_PARAMS
+            ]
+            if missing_cols:
+                err_msg = "Subject %s is missing acquisition parameters for %s: %s" % (
+                    subject,
+                    reproin,
+                    missing_cols,
+                )
+                log.error(err_msg)
+                df.loc[:, "error"] = err_msg
+                return df
+
+            unique_df = unique_df.apply(
                 lambda col: col.map(lambda x: tuple(x) if isinstance(x, list) else x)
             )
             if len(unique_df.drop_duplicates()) > 1:
-                subject = df["subject.label"].iloc[0]
-                reproin = df["reproin"].iloc[0]
                 err_msg = (
                     "Subject %s has runs with mismatched acquisition parameters for %s: %s"
                     % (subject, reproin, list(unique_df.index))
