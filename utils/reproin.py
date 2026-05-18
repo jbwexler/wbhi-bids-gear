@@ -7,6 +7,7 @@ import logging
 from datetime import timedelta
 from utils.constants import (
     ALLOWED_DATATYPES,
+    ANAT_SUFFIX_CASE,
     ACQ_PARAMS,
     ACQ_PARAMS_FALLBACK,
     OPTIONAL_ACQ_PARAMS,
@@ -149,19 +150,20 @@ def reproin_filter(row: pd.Series) -> str:
     label = row["file.info.header.dicom.SeriesDescription"]
     if not isinstance(label, str):
         label = row["acquisition.label"]
-    label = label.lower()
+    label_lower = label.lower()
     if row["file.type"] != "dicom":
         return label
 
     # Utilize acq label if already in reproin format. Otherwise, create a reproin label
-    label_re = re.sub(r"_\d$", "", label)
+    label_re = re.sub(r"_\d$", "", label_lower)
     label_ignore = label + "_ignore-BIDS"
     if label_re in IGNORE_SCANS:
         return label_ignore
+
     image_type = row["file.info.header.dicom.ImageType"]
     # to-do: add exception for mp2rage
-    if image_type and "DERIVED" in image_type:
-        return label_ignore
+    # if image_type and "DERIVED" in image_type:
+    #    return label_ignore
     try:
         validator = parse_series_spec(label)
     except IndexError:
@@ -178,14 +180,20 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
         if validator["datatype"] == "func":
             task = validator.get("task", "")
-            if "rest" in task or "rsfmri" in task or task == "rs":
+            if task and (
+                "rest" in task.lower()
+                or "rsfmri" in task.lower()
+                or task.lower() == "rs"
+            ):
                 validator["task"] = "rest"
             else:
                 return label_ignore
 
         new_label = validator["datatype"]
         if validator.get("datatype_suffix") and validator["datatype_suffix"] != "None":
-            new_label += "-" + validator["datatype_suffix"]
+            suffix = validator["datatype_suffix"]
+            suffix = ANAT_SUFFIX_CASE.get(suffix, suffix)
+            new_label += "-" + suffix
         if validator.get("task") and validator["task"] != "None":
             new_label += "_task-" + validator["task"]
         if validator.get("acq") and validator["acq"] != "None":
@@ -196,35 +204,35 @@ def reproin_filter(row: pd.Series) -> str:
         intent = row["file.classification.Intent"]
         features = row["file.classification.Features"]
 
-        if label.startswith("gobrain_"):
+        if label_lower.startswith("gobrain_"):
             return label_ignore
         elif label_re.endswith(("physiolog", "setter", "tensor")):
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
-        elif label.startswith("se_distortion"):
+        elif label_lower.startswith("se_distortion"):
             return "fmap"
         elif measurement and "Perfusion" in measurement:
             return "asl"
         elif intent and "Structural" in intent:
             if features and "FLAIR" in features:
-                return "anat-flair"
+                return "anat-FLAIR"
             elif measurement:
                 if "T1" in measurement:
-                    return "anat-t1w"
+                    return "anat-T1w"
                 elif "T2" in measurement:
-                    if "hippocampus" in label:
-                        return "anat-t2w_acq-hippocampus"
+                    if "hippocampus" in label_lower:
+                        return "anat-T2w_acq-hippocampus"
                     else:
-                        return "anat-t2w"
+                        return "anat-T2w"
                 elif "Diffusion" in measurement:
                     if not label_re.endswith(DWI_SUFFIXES_IGNORE):
                         return "dwi"
         elif (
             intent
             and "Functional" in intent
-            and label
-            and ("rest" in label or "rsfmri" in label)
+            and label_lower
+            and ("rest" in label_lower or "rsfmri" in label_lower)
         ):
             return "func_task-rest"
         elif intent and "Fieldmap" in intent:
@@ -390,6 +398,13 @@ def add_fmap(df: pd.DataFrame()):
 
     if fmap_df.empty:
         return pd.concat([df, ignore_df]).reset_index(drop=True)
+
+    ### Delete these lines when ready for fmap
+    err_msg = "Subject %s has fieldmap(s) and will be skipped." % subject
+    log.warning(err_msg)
+    df.loc[:, "error"] = err_msg
+    return pd.concat([df, ignore_df]).reset_index(drop=True)
+    ###
 
     # Determine fieldmap file types (magnitude, phase, etc.)
     type_mapping = fmap_df.groupby("acquisition.id")[fmap_df.columns].apply(
@@ -560,16 +575,7 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
 
     if rec_df.empty:
         return df
-    """
-    has_derived = (
-        rec_df["file.info.header.dicom.ImageType"]
-        .apply(lambda x: x is not None and "DERIVED" in x)
-        .any()
-    )
-    if has_derived:
-        log.info("For now, skipping sessions with potential reconstructions.")
-        return
-    """
+
     rec_df = (
         rec_df.groupby("reproin")[rec_df.columns]
         .apply(lambda x: timestamp_group(x, REC_DELTA))
@@ -605,8 +611,18 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
                     err_msg
                 )
             else:
-                acq_id_update = group[group["norm"]]["acquisition.id"].iloc[0]
-                df.loc[df["acquisition.id"] == acq_id_update, "reproin"] += "_rec-norm"
+                ### Remove this when ready for recs
+                err_msg = (
+                    "For now, skipping sessions with potential reconstructions: %s"
+                    % subject
+                )
+                log.info(err_msg)
+                df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = (
+                    err_msg
+                )
+                ###
+                # acq_id_update = group[group["norm"]]["acquisition.id"].iloc[0]
+                # df.loc[df["acquisition.id"] == acq_id_update, "reproin"] += "_rec-norm"
 
     return df
 
@@ -654,7 +670,8 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
             reproin = df["reproin"].iloc[0]
             empty_mask = unique_df.map(_is_empty)
             missing_cols = [
-                c for c in empty_mask.columns[empty_mask.any()].tolist()
+                c
+                for c in empty_mask.columns[empty_mask.any()].tolist()
                 if c not in OPTIONAL_ACQ_PARAMS
             ]
             if missing_cols:

@@ -67,7 +67,7 @@ def run_gear(gear: Gear, inputs: dict, config: dict, dest, tags=None) -> str:
             time.sleep(1)
 
 
-def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
+def mv_session(session: SessionListOutput, dst_project: ProjectOutput, client) -> None:
     """Moves a session to another project."""
     try:
         session.update(project=dst_project.id)
@@ -87,5 +87,5 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
         else:
             log.exception(
                 f"Error moving subject {session.subject.label}/{session.label}"
-                "to {dst_project.label}"
+                f" to {dst_project.label}"
             )

@@ -110,6 +110,12 @@ ACQ_PARAMS_FALLBACK = {
     ),
 }
 ALLOWED_DATATYPES = ("func", "anat", "dwi", "fmap", "asl")
+# Map lowercase anat datatype_suffix from parse_series_spec to proper BIDS case.
+ANAT_SUFFIX_CASE = {
+    "t1w": "T1w",
+    "t2w": "T2w",
+    "flair": "FLAIR",
+}
 FMAP_SUFFIXES = (
     "gre",
     "epi",
@@ -122,5 +128,5 @@ FMAP_SUFFIXES = (
     "fieldmap",
     "m0scan",
 )
-IGNORE_SCANS = ("BIAS_BC", "BIAS_32CH", "BIAS_BodyCoil", "BIAS_HeadCoil")
-DWI_SUFFIXES_IGNORE = ("ADC", "TRACEW", "FA", "COLFA")
+IGNORE_SCANS = ("bias_bc", "bias_32ch", "bias_bodycoil", "bias_headcoil")
+DWI_SUFFIXES_IGNORE = ("adc", "tracew", "fa", "colfa")

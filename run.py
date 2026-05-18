@@ -293,7 +293,7 @@ def mv_bidsified(src_project: ProjectOutput, dst_project: ProjectOutput) -> None
 
     for i, ses_id in bidsified_df["session.id"].items():
         session = client.get_session(ses_id)
-        mv_session(session, dst_project)
+        mv_session(session, dst_project, client)
 
 
 def main():
