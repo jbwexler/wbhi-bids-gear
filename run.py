@@ -208,6 +208,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
 
 def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df.copy()
+    breakpoint()
 
     file_df = file_df.groupby("subject.id").filter(
         lambda x: x["error"].apply(lambda x: not x).all()

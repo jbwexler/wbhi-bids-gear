@@ -392,9 +392,7 @@ def add_fmap(df: pd.DataFrame()):
                 in x[x["file.type"] == "dicom"]["file.classification.Intent"].iloc[0]
             )
         )
-        .reset_index(drop=True)
     )
-    fmap_df["reproin_dict"] = fmap_df["reproin"].apply(lambda x: parse_series_spec(x))
 
     if fmap_df.empty:
         return pd.concat([df, ignore_df]).reset_index(drop=True)
@@ -405,6 +403,14 @@ def add_fmap(df: pd.DataFrame()):
     df.loc[:, "error"] = err_msg
     return pd.concat([df, ignore_df]).reset_index(drop=True)
     ###
+
+    fmap_related_df = df[df["reproin"].str.startswith(("asl", "func", "dwi"), na=False)]
+    if fmap_related_df.empty:
+        fmap_df["reproin"] += "_ignore-BIDS"
+        df.update(fmap_df)
+        return pd.concat([df, ignore_df]).reset_index(drop=True)
+
+    fmap_df["reproin_dict"] = fmap_df["reproin"].apply(lambda x: parse_series_spec(x))
 
     # Determine fieldmap file types (magnitude, phase, etc.)
     type_mapping = fmap_df.groupby("acquisition.id")[fmap_df.columns].apply(
