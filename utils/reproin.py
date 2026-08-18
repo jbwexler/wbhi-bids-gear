@@ -711,6 +711,7 @@ def add_sbref(df: pd.DataFrame()):
     df = df.copy()
     sbref_df = df[
         df["file.info.header.dicom.SeriesDescription"].str.contains("sbref", case=False)
+        & ~df["reproin"].str.endswith("_ignore-BIDS")
     ]
 
     if not sbref_df.empty:
