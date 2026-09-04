@@ -380,17 +380,14 @@ def add_fmap(df: pd.DataFrame()):
 
     subject = df["subject.label"].iloc[0]
     fmap_df = df[df["file.modality"] == "MR"]
-    fmap_df = (
-        fmap_df.groupby("acquisition.id")
-        .filter(
-            lambda x: (
-                not x[x["file.type"] == "dicom"].empty
-                and not x[x["file.type"] == "dicom"]["file.classification.Intent"]
-                .isnull()
-                .values.any()
-                and "Fieldmap"
-                in x[x["file.type"] == "dicom"]["file.classification.Intent"].iloc[0]
-            )
+    fmap_df = fmap_df.groupby("acquisition.id").filter(
+        lambda x: (
+            not x[x["file.type"] == "dicom"].empty
+            and not x[x["file.type"] == "dicom"]["file.classification.Intent"]
+            .isnull()
+            .values.any()
+            and "Fieldmap"
+            in x[x["file.type"] == "dicom"]["file.classification.Intent"].iloc[0]
         )
     )
 
@@ -709,25 +706,57 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_sbref(df: pd.DataFrame()):
     df = df.copy()
+    not_ignored = ~df["reproin"].str.contains("_ignore-BIDS", na=False)
     sbref_df = df[
         df["file.info.header.dicom.SeriesDescription"].str.contains("sbref", case=False)
-        & ~df["reproin"].str.endswith("_ignore-BIDS")
+        & not_ignored
     ]
 
     if not sbref_df.empty:
-        func_dwi = df[df["reproin"].str.startswith(("func", "dwi"))]
+        func_dwi = df[df["reproin"].str.startswith(("func", "dwi")) & not_ignored]
         func_dwi = func_dwi[
             ~func_dwi["file.info.header.dicom.SeriesDescription"].str.contains(
                 "sbref", case=False
             )
         ]
 
+        if (~func_dwi["acq_datetime"].isna()).all() and (
+            ~sbref_df["acq_datetime"].isna()
+        ).all():
+            use_series = False
+        elif (~func_dwi["file.info.header.dicom.SeriesNumber"].isna()).all() and (
+            ~sbref_df["file.info.header.dicom.SeriesNumber"].isna()
+        ).all():
+            use_series = True
+        else:
+            err_msg = (
+                "Subject %s contains files relevant to sbref matching that don't contain "
+                "acq_datetime or SeriesNumber."
+            ) % df.iloc[0]["subject.label"]
+            log.error(err_msg)
+            df.loc[:, "error"] = err_msg
+            return df
+
         for i, sbref in sbref_df.iterrows():
-            func_dwi["timedelta"] = sbref["acq_datetime"] - func_dwi["acq_datetime"]
             match = func_dwi[
-                (func_dwi["timedelta"] <= SBREF_DELTA)
-                & (func_dwi["timedelta"] >= -SBREF_DELTA)
-            ]
+                sbref["file.info.header.dicom.ProtocolName"]
+                == func_dwi["file.info.header.dicom.ProtocolName"]
+            ].copy()
+
+            if use_series:
+                match = match[
+                    (
+                        match["file.info.header.dicom.SeriesNumber"]
+                        - sbref["file.info.header.dicom.SeriesNumber"]
+                        == 1
+                    )
+                ]
+            else:
+                match["timedelta"] = sbref["acq_datetime"] - match["acq_datetime"]
+                match = match[
+                    (match["timedelta"] <= SBREF_DELTA)
+                    & (match["timedelta"] >= -SBREF_DELTA)
+                ]
 
             if len(match) == 1:
                 df.loc[i, "sbref"] = match["acquisition.id"].iloc[0]
@@ -736,7 +765,7 @@ def add_sbref(df: pd.DataFrame()):
                 )
             elif len(match) > 1:
                 err_msg = (
-                    "%s in subject %s should match exactly 1 bold image, but it matched 2 %s"
+                    "%s in subject %s should match exactly 1 bold image, but it matched multiple %s"
                     % (
                         sbref["acquisition.label"],
                         sbref["subject.label"],

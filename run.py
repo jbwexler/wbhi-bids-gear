@@ -84,20 +84,12 @@ def get_acq_datetime(df: pd.DataFrame()) -> pd.Series():
     )
 
     df["acq_datetime"] = pd.to_datetime(df["acq_datetime"], format="%Y%m%d%H%M%S.%f")
-
-    df["acquisition.timestamp"] = pd.to_datetime(
-        df["acquisition.timestamp"], format="mixed", dayfirst=True
-    )
     df["acq_datetime"] = df["acq_datetime"].replace("", pd.NA)
-    mask = df["acq_datetime"].isna() & (df["file.type"] == "dicom")
-    df.loc[mask, "acq_datetime"] = df.loc[mask, "acquisition.timestamp"].dt.tz_localize(
-        None
-    )
 
-    df["acq_datetime"] = df["acquisition.id"].map(
+    return df["acquisition.id"].map(
         df[df["file.type"] == "dicom"].groupby("acquisition.id")["acq_datetime"].first()
     )
-    return df["acq_datetime"]
+
 
 
 def rename_sessions(df: pd.DataFrame()) -> None:
