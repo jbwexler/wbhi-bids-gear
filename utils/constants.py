@@ -69,15 +69,15 @@ ACQ_PARAMS = (
     "file.info.header.dicom.SliceThickness",
     "file.info.header.dicom.EchoTime",
     "file.info.header.dicom.RepetitionTime",
-    "file.info.header.dicom.InversionTime",
     "file.info.header.dicom.FlipAngle",
-    "file.info.header.dicom.BaseResolution",
-    "file.info.header.dicom.ParallelReductionFactorInPlane",
 )
 # ACQ_PARAMS that are allowed to be empty/NaN without raising a missing-params error.
 OPTIONAL_ACQ_PARAMS = (
     "file.info.header.dicom.ScanningSequence",
     "file.info.header.dicom.SequenceVariant",
+    "file.info.header.dicom.InversionTime",
+    "file.info.header.dicom.BaseResolution",
+    "file.info.header.dicom.ParallelReductionFactorInPlane",
 )
 # Fallback paths to try in order when the top-level ACQ_PARAMS field is empty.
 ACQ_PARAMS_FALLBACK = {
