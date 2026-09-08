@@ -373,10 +373,8 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
 
 def add_fmap(df: pd.DataFrame()):
     df = df.copy()
-    ignore_df = df[df["reproin"].str.endswith("_ignore-BIDS", na=False)]
-    df = df[~df["reproin"].str.endswith("_ignore-BIDS", na=False)]
     if df.empty:
-        return ignore_df
+        return df
 
     subject = df["subject.label"].iloc[0]
     fmap_df = df[df["file.modality"] == "MR"]
@@ -392,20 +390,20 @@ def add_fmap(df: pd.DataFrame()):
     )
 
     if fmap_df.empty:
-        return pd.concat([df, ignore_df]).reset_index(drop=True)
+        return df.reset_index(drop=True)
 
     ### Delete these lines when ready for fmap
     err_msg = "Subject %s has fieldmap(s) and will be skipped." % subject
     log.warning(err_msg)
     df.loc[:, "error"] = err_msg
-    return pd.concat([df, ignore_df]).reset_index(drop=True)
+    return df.reset_index(drop=True)
     ###
 
     fmap_related_df = df[df["reproin"].str.startswith(("asl", "func", "dwi"), na=False)]
     if fmap_related_df.empty:
         fmap_df["reproin"] += "_ignore-BIDS"
         df.update(fmap_df)
-        return pd.concat([df, ignore_df]).reset_index(drop=True)
+        return df.reset_index(drop=True)
 
     fmap_df["reproin_dict"] = fmap_df["reproin"].apply(lambda x: parse_series_spec(x))
 
@@ -421,7 +419,7 @@ def add_fmap(df: pd.DataFrame()):
         )
         log.error(err_msg)
         df.loc[:, "error"] = err_msg
-        return pd.concat([df, ignore_df]).reset_index(drop=True)
+        return df.reset_index(drop=True)
     fmap_df["fmap_file_type"] = fmap_df["acquisition.id"].map(type_mapping)
     fmap_df = fmap_df[
         fmap_df["file.type"].apply(lambda x: x in ("nifti", "bval", "bvec"))
@@ -448,7 +446,7 @@ def add_fmap(df: pd.DataFrame()):
             )
             log.error(err_msg)
             group.loc[:, "error"] = err_msg
-            return pd.concat([group, ignore_df]).reset_index(drop=True)
+            return group.reset_index(drop=True)
         elif (
             group["reproin_dict"]
             .apply(
@@ -569,7 +567,7 @@ def add_fmap(df: pd.DataFrame()):
         ~df.index.isin(fmap_mapping.index), df.index.map(fmap_mapping)
     )
 
-    return pd.concat([df.reset_index(), ignore_df]).reset_index(drop=True)
+    return df.reset_index()
 
 
 def add_rec(df: pd.DataFrame) -> pd.DataFrame:
@@ -706,14 +704,12 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_sbref(df: pd.DataFrame()):
     df = df.copy()
-    not_ignored = ~df["reproin"].str.contains("_ignore-BIDS", na=False)
     sbref_df = df[
         df["file.info.header.dicom.SeriesDescription"].str.contains("sbref", case=False)
-        & not_ignored
     ]
 
     if not sbref_df.empty:
-        func_dwi = df[df["reproin"].str.startswith(("func", "dwi")) & not_ignored]
+        func_dwi = df[df["reproin"].str.startswith(("func", "dwi"))]
         func_dwi = func_dwi[
             ~func_dwi["file.info.header.dicom.SeriesDescription"].str.contains(
                 "sbref", case=False

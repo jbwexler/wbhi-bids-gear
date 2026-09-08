@@ -173,12 +173,22 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = check_asl_and_spectroscopy(file_df)
     file_df = check_anat_presence(file_df)
 
+    is_ignored = file_df["reproin"].str.contains("_ignore-BIDS", na=False)
+    ignored_df = file_df[is_ignored]
+    file_df = file_df[~is_ignored]
+
     file_df = (
         file_df.groupby("session.id")[file_df.columns]
         .apply(add_fmap)
         .reset_index(drop=True)
     )
     file_df = file_df[file_df["file.type"] == "dicom"]
+
+    # add_fmap may append _ignore-BIDS to unmatched fmaps; re-partition
+    is_ignored = file_df["reproin"].str.contains("_ignore-BIDS", na=False)
+    ignored_df = pd.concat([ignored_df, file_df[is_ignored]])
+    file_df = file_df[~is_ignored]
+
     file_df = (
         file_df.groupby("session.id")[file_df.columns]
         .apply(add_rec)
@@ -195,7 +205,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    return file_df
+    return pd.concat([file_df, ignored_df], ignore_index=True)
 
 
 def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
