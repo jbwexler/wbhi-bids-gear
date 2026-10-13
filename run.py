@@ -283,7 +283,7 @@ def tag_and_email(project: ProjectOutput) -> None:
         ", ".join(failed_job_subjects),
         config["gmail_address"],
         ADMIN_EMAIL,
-        config["gmail_password"],
+        os.environ["GMAIL_PASSWORD"],
     )
 
 

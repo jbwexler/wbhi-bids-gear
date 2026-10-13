@@ -23,13 +23,8 @@
     },
     "inputs": {"key": {"base": "api-key"}},
     "config": {
-        "redcap_api_key": {"description": "REDCap API key", "type": "string"},
         "gmail_address": {
             "description": "Address of gmail account to use for sending emails",
-            "type": "string"
-        },
-        "gmail_password": {
-            "description": "Password of gmail account to use for sending emails",
             "type": "string"
         },
         "debug": {
