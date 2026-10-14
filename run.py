@@ -19,6 +19,7 @@ from utils.reproin import (
     add_fmap,
     add_run,
     add_rec,
+    build_acq_df,
     check_duplicate_reproin,
     rm_acq_labels,
 )
@@ -57,7 +58,6 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     for session_id in bidsified_sessions:
         client.get_session(session_id).delete_tag("bidsified")
 
-    file_df["acq_datetime"] = get_acq_datetime(file_df)
     file_df["sbref"] = None
     file_df["error"] = ""
 
@@ -84,12 +84,7 @@ def get_acq_datetime(df: pd.DataFrame()) -> pd.Series():
     )
 
     df["acq_datetime"] = pd.to_datetime(df["acq_datetime"], format="%Y%m%d%H%M%S.%f")
-    df["acq_datetime"] = df["acq_datetime"].replace("", pd.NA)
-
-    return df["acquisition.id"].map(
-        df[df["file.type"] == "dicom"].groupby("acquisition.id")["acq_datetime"].first()
-    )
-
+    return df["acq_datetime"].replace("", pd.NA)
 
 
 def rename_sessions(df: pd.DataFrame()) -> None:
@@ -153,59 +148,56 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df[~file_df["acquisition.label"].str.endswith("_ignore-BIDS")]
     file_df = skip_multiple_dicoms(file_df)
 
-    dcm_df = file_df[file_df["file.type"] == "dicom"]
-
-    if dcm_df.empty:
+    if file_df.empty:
         log.info("No acquisitions were found that need to be bidsified.")
         sys.exit(0)
 
-    dcm_df["reproin"] = dcm_df.apply(reproin_filter, axis=1)
-    dcm_df = (
-        dcm_df.groupby("session.id")[dcm_df.columns]
+    acq_df = build_acq_df(file_df)
+    acq_df["acq_datetime"] = get_acq_datetime(acq_df)
+
+    acq_df["reproin"] = acq_df.apply(reproin_filter, axis=1)
+    acq_df = (
+        acq_df.groupby("session.id")[acq_df.columns]
         .apply(rm_acq_labels)
         .reset_index(drop=True)
     )
-    reproin_mapping = dcm_df.set_index("acquisition.id")["reproin"]
-    reproin_mapping = reproin_mapping[~reproin_mapping.index.duplicated(keep="first")]
-    file_df["reproin"] = file_df["acquisition.id"].map(reproin_mapping)
 
-    file_df = check_nifti_presence(file_df)
-    file_df = check_asl_and_spectroscopy(file_df)
-    file_df = check_anat_presence(file_df)
+    acq_df = check_nifti_presence(acq_df)
+    acq_df = check_asl_and_spectroscopy(acq_df)
+    acq_df = check_anat_presence(acq_df)
 
-    is_ignored = file_df["reproin"].str.contains("_ignore-BIDS", na=False)
-    ignored_df = file_df[is_ignored]
-    file_df = file_df[~is_ignored]
+    is_ignored = acq_df["reproin"].str.contains("_ignore-BIDS", na=False)
+    ignored_df = acq_df[is_ignored]
+    acq_df = acq_df[~is_ignored]
 
-    file_df = (
-        file_df.groupby("session.id")[file_df.columns]
+    acq_df = (
+        acq_df.groupby("session.id")[acq_df.columns]
         .apply(add_fmap)
         .reset_index(drop=True)
     )
-    file_df = file_df[file_df["file.type"] == "dicom"]
 
     # add_fmap may append _ignore-BIDS to unmatched fmaps; re-partition
-    is_ignored = file_df["reproin"].str.contains("_ignore-BIDS", na=False)
-    ignored_df = pd.concat([ignored_df, file_df[is_ignored]])
-    file_df = file_df[~is_ignored]
+    is_ignored = acq_df["reproin"].str.contains("_ignore-BIDS", na=False)
+    ignored_df = pd.concat([ignored_df, acq_df[is_ignored]])
+    acq_df = acq_df[~is_ignored]
 
-    file_df = (
-        file_df.groupby("session.id")[file_df.columns]
+    acq_df = (
+        acq_df.groupby("session.id")[acq_df.columns]
         .apply(add_rec)
         .reset_index(drop=True)
     )
-    file_df = (
-        file_df.groupby(["session.id", "reproin"])[file_df.columns]
+    acq_df = (
+        acq_df.groupby(["session.id", "reproin"])[acq_df.columns]
         .apply(add_run)
         .reset_index(drop=True)
     )
-    file_df = (
-        file_df.groupby("session.id")[file_df.columns]
+    acq_df = (
+        acq_df.groupby("session.id")[acq_df.columns]
         .apply(add_sbref)
         .reset_index(drop=True)
     )
 
-    return pd.concat([file_df, ignored_df], ignore_index=True)
+    return pd.concat([acq_df, ignored_df], ignore_index=True)
 
 
 def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
