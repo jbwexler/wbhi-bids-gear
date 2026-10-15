@@ -61,8 +61,6 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     file_df["sbref"] = None
     file_df["error"] = ""
 
-    file_df = check_pydeface(file_df)
-
     if file_df.empty:
         log.info("No subjects were found that need to be bidsified.")
         sys.exit(0)
@@ -163,6 +161,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     acq_df = check_nifti_presence(acq_df)
+    acq_df = check_pydeface(acq_df)
     acq_df = check_asl_and_spectroscopy(acq_df)
     acq_df = check_anat_presence(acq_df)
 

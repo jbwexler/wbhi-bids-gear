@@ -29,6 +29,7 @@ _NIFTI_DERIV_RE = re.compile(
 _NIFTI_FILE_FIELDS = {
     "file.file_id": "file_id",
     "file.name": "name",
+    "file.tags": "tags",
     "file.info.SeriesDescription": "SeriesDescription",
     "file.info.ImageType": "ImageType",
     "file.info.EchoTime": "EchoTime",
@@ -101,57 +102,34 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
     return acq_df.reset_index()
 
 
-def pydeface_filter(df: pd.DataFrame) -> bool:
-    """Returns True if any acquisitions containing a Structural T1 or T2 dicom
-    DO NOT also contain a nifti with a 'pydeface' label. Otherwise, returns False."""
+def check_pydeface(acq_df: pd.DataFrame) -> pd.DataFrame:
+    """Removes subjects with any Structural T1 or T2 acquisitions containing a
+    nifti without the 'pydeface' tag, unless the acquisition's reproin ends with
+    _ignore-BIDS."""
+    acq_df = acq_df.copy()
 
-    # Check for any Structural T1 or T2 dicoms
-    dcm_df = df.copy()
-    try:
-        dcm_df = dcm_df[dcm_df["file.type"] == "dicom"]
-        dcm_df = dcm_df[~dcm_df["file.classification.Intent"].isna()]
-        dcm_df = dcm_df[~dcm_df["file.classification.Measurement"].isna()]
-        mask = dcm_df["file.classification.Intent"].apply(lambda x: "Structural" in x)
-        dcm_df = dcm_df[mask]
-        mask = dcm_df["file.classification.Measurement"].apply(
-            lambda x: "T1" in x or "T2" in x
+    is_struct = acq_df["file.classification.Intent"].apply(
+        lambda x: type(x) is list and "Structural" in x
+    ) & acq_df["file.classification.Measurement"].apply(
+        lambda x: type(x) is list and ("T1" in x or "T2" in x)
+    )
+    no_pydeface_df = acq_df[
+        is_struct
+        & acq_df["nifti_files"].apply(
+            lambda files: any("pydeface" not in f["tags"] for f in files)
         )
-        dcm_df = dcm_df[mask]
-    except KeyError:
-        return False
-    if dcm_df.empty:
-        return False
-
-    # If structurals present, check for niftis without 'pydeface' tag
-    try:
-        nii_df = df.copy()
-        nii_df = nii_df[nii_df["file.type"] == "nifti"]
-        mask = nii_df["file.tags"].apply(lambda x: "pydeface" not in x).any()
-    except KeyError:
-        return False
-    return mask
-
-
-def check_pydeface(file_df: pd.DataFrame) -> pd.DataFrame:
-    """Returns a df of files from subjects for which all structural T1 and T2 niftis
-    have 'pydeface' tag"""
-    file_df = file_df.copy()
-
-    if file_df.empty:
-        return file_df
-
-    no_pydeface_df = file_df.groupby("acquisition.id").filter(pydeface_filter)
-    file_df = file_df[
-        ~file_df["subject.label"].isin(no_pydeface_df["subject.label"].unique())
+        & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False)
     ]
 
+    acq_df = acq_df[~acq_df["subject.label"].isin(no_pydeface_df["subject.label"])]
     if not no_pydeface_df.empty:
         log.warning(
-            "The following subjects contain anatomical nifti(s) without the 'pydeface' tag: "
-            "\n%s" % no_pydeface_df["subject.label"].unique()
+            "The following subjects contain T1/T2 acquisition(s) without the 'pydeface' tag "
+            "and will be skipped: \n%s"
+            % no_pydeface_df[["subject.label", "acquisition.label"]].to_string()
         )
 
-    return file_df
+    return acq_df
 
 
 def check_nifti_presence(acq_df: pd.DataFrame) -> pd.DataFrame:
@@ -167,10 +145,9 @@ def check_nifti_presence(acq_df: pd.DataFrame) -> pd.DataFrame:
 
     acq_df = acq_df[~acq_df["subject.label"].isin(no_nii_df["subject.label"])]
     if not no_nii_df.empty:
-        pd.options.display.max_rows = 5000
         log.warning(
             "The following subjects contain acquisition(s) without nifti(s): "
-            "\n%s" % no_nii_df[["subject.label", "acquisition.label"]]
+            "\n%s" % no_nii_df[["subject.label", "acquisition.label"]].to_string()
         )
 
     return acq_df
