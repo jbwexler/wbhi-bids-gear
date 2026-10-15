@@ -9,6 +9,7 @@ from utils.constants import (
     ALLOWED_DATATYPES,
     ANAT_SUFFIX_CASE,
     ACQ_PARAMS,
+    OPTIONAL_ACQ_PARAMS,
     ACQ_PARAMS_FALLBACK,
     SBREF_DELTA,
     FMAP_DELTA,
@@ -729,9 +730,14 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
             run_df["reproin"] = run_df["reproin"] + "_" + run_df["run"]
         else:
             unique_df = run_df.apply(get_acq_params, axis=1)
+
             subject = df["subject.label"].iloc[0]
             reproin = df["reproin"].iloc[0]
-            empty_mask = unique_df.map(_is_empty)
+
+            unique_req_df = unique_df[
+                [c for c in unique_df.columns if c not in OPTIONAL_ACQ_PARAMS]
+            ]
+            empty_mask = unique_req_df.map(_is_empty)
             missing_cols = empty_mask.columns[empty_mask.any()].tolist()
             if missing_cols:
                 err_msg = "Subject %s is missing acquisition parameters for %s: %s" % (
@@ -745,8 +751,8 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
 
             unique_df = unique_df.apply(
                 lambda col: col.map(lambda x: tuple(x) if isinstance(x, list) else x)
-            )
-            if len(unique_df.drop_duplicates()) > 1:
+            ).drop_duplicates()
+            if len(unique_df) > 1:
                 err_msg = (
                     "Subject %s has runs with mismatched acquisition parameters for %s: %s"
                     % (subject, reproin, list(unique_df.index))
