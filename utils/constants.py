@@ -66,6 +66,10 @@ ACQ_PARAMS = (
     "file.info.InversionTime",
     "file.info.BaseResolution",
     "file.info.ParallelReductionFactorInPlane",
+    "file.info.header.nifti.dim.0",
+    "file.info.header.nifti.dim.1",
+    "file.info.header.nifti.dim.2",
+    "file.info.header.nifti.dim.3",
 )
 # Fallback paths to try in order when the top-level ACQ_PARAMS field is empty.
 ACQ_PARAMS_FALLBACK = {
