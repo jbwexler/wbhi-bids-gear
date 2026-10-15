@@ -21,9 +21,7 @@ from utils.constants import (
 log = logging.getLogger(__name__)
 
 
-_NIFTI_DERIV_RE = re.compile(
-    r"(?:_ph|_e[2-9]|_imaginary|_real|_magnitude[2-9])\.nii"
-)
+_NIFTI_DERIV_RE = re.compile(r"(?:_ph|_e[2-9]|_imaginary|_real|_magnitude[2-9])\.nii")
 
 # Shape of each dict in acq_df["nifti_files"]; keys = file_df columns, values = dict keys
 _NIFTI_FILE_FIELDS = {
@@ -56,7 +54,9 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
     """
     # Per-acquisition lookups
     types_by_acq = file_df.groupby("acquisition.id")["file.type"].apply(set)
-    dicom_rows = file_df[file_df["file.type"] == "dicom"].groupby("acquisition.id").first()
+    dicom_rows = (
+        file_df[file_df["file.type"] == "dicom"].groupby("acquisition.id").first()
+    )
 
     niftis = file_df[file_df["file.type"] == "nifti"].copy()
     niftis["magnitude_type"] = niftis["file.name"].apply(_magnitude_type)
@@ -80,9 +80,13 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
         .drop_duplicates("acquisition.id", keep="first")
         .set_index("acquisition.id")
     )
-    no_nifti_rows = dicom_rows.loc[dicom_rows.index.difference(canonical_niftis.index)].copy()
+    no_nifti_rows = dicom_rows.loc[
+        dicom_rows.index.difference(canonical_niftis.index)
+    ].copy()
     for field in ("SeriesDescription", "ImageType"):
-        no_nifti_rows[f"file.info.{field}"] = no_nifti_rows[f"file.info.header.dicom.{field}"]
+        no_nifti_rows[f"file.info.{field}"] = no_nifti_rows[
+            f"file.info.header.dicom.{field}"
+        ]
     acq_df = pd.concat([canonical_niftis, no_nifti_rows])
 
     # Backfill fields that only exist on dicom
@@ -92,11 +96,23 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
 
     # Attach derived columns
     acq_df["nifti_files"] = acq_df.index.map(lambda acq_id: nifti_files.get(acq_id, []))
-    acq_df["has_bval"] = types_by_acq.apply(lambda s: "bval" in s).reindex(acq_df.index, fill_value=False)
-    acq_df["has_bvec"] = types_by_acq.apply(lambda s: "bvec" in s).reindex(acq_df.index, fill_value=False)
+    acq_df["has_bval"] = types_by_acq.apply(lambda s: "bval" in s).reindex(
+        acq_df.index, fill_value=False
+    )
+    acq_df["has_bvec"] = types_by_acq.apply(lambda s: "bvec" in s).reindex(
+        acq_df.index, fill_value=False
+    )
 
     # Drop file-level + internal columns
-    drop_cols = ("file.file_id", "file.type", "file.name", "file.tags", "file.created", "_is_deriv", "magnitude_type")
+    drop_cols = (
+        "file.file_id",
+        "file.type",
+        "file.name",
+        "file.tags",
+        "file.created",
+        "_is_deriv",
+        "magnitude_type",
+    )
     acq_df = acq_df.drop(columns=[c for c in drop_cols if c in acq_df.columns])
 
     return acq_df.reset_index()
@@ -702,9 +718,7 @@ def get_acq_params(row: pd.Series) -> pd.Series:
 
 
 def add_run(df: pd.DataFrame) -> pd.DataFrame:
-    skip_df = df[
-        df["file.info.SeriesDescription"].str.contains("sbref", case=False)
-    ]
+    skip_df = df[df["file.info.SeriesDescription"].str.contains("sbref", case=False)]
     run_df = df[~df["acquisition.id"].isin(skip_df["acquisition.id"])]
 
     # TODO: Handle recs properly (make sure rec pairs get same run number)
@@ -748,16 +762,12 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_sbref(df: pd.DataFrame()):
     df = df.copy()
-    sbref_df = df[
-        df["file.info.SeriesDescription"].str.contains("sbref", case=False)
-    ]
+    sbref_df = df[df["file.info.SeriesDescription"].str.contains("sbref", case=False)]
 
     if not sbref_df.empty:
         func_dwi = df[df["reproin"].str.startswith(("func", "dwi"))]
         func_dwi = func_dwi[
-            ~func_dwi["file.info.SeriesDescription"].str.contains(
-                "sbref", case=False
-            )
+            ~func_dwi["file.info.SeriesDescription"].str.contains("sbref", case=False)
         ]
 
         if (~func_dwi["acq_datetime"].isna()).all() and (
@@ -779,8 +789,7 @@ def add_sbref(df: pd.DataFrame()):
 
         for i, sbref in sbref_df.iterrows():
             match = func_dwi[
-                sbref["file.info.ProtocolName"]
-                == func_dwi["file.info.ProtocolName"]
+                sbref["file.info.ProtocolName"] == func_dwi["file.info.ProtocolName"]
             ].copy()
 
             if use_series:

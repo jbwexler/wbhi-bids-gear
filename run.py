@@ -38,7 +38,6 @@ PKL_PATH = "output/file_df.pkl"
 
 def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     """Returns a df of files from subjects that are ready to be bidsified."""
-
     if config.get("test_mode") and os.path.exists(PKL_PATH):
         log.info(f"Reusing df from {PKL_PATH}.")
         file_df = pd.read_pickle(PKL_PATH)

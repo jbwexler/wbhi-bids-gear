@@ -69,9 +69,7 @@ ACQ_PARAMS = (
 )
 # Fallback paths to try in order when the top-level ACQ_PARAMS field is empty.
 ACQ_PARAMS_FALLBACK = {
-    "file.info.SequenceName": (
-        "file.info.PulseSequenceName",
-    ),
+    "file.info.SequenceName": ("file.info.PulseSequenceName",),
 }
 ALLOWED_DATATYPES = ("func", "anat", "dwi", "fmap", "asl")
 # Map lowercase anat datatype_suffix from parse_series_spec to proper BIDS case.
