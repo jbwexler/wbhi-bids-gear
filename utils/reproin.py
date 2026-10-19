@@ -30,7 +30,7 @@ _NIFTI_FILE_FIELDS = {
     "file.name": "name",
     "file.tags": "tags",
     "file.info.SeriesDescription": "SeriesDescription",
-    "file.info.ImageType": "ImageType",
+    "ImageType": "ImageType",
     "file.info.EchoTime": "EchoTime",
     "magnitude_type": "magnitude_type",
 }
@@ -42,6 +42,16 @@ def _magnitude_type(name: str):
     if "_e2.nii" in name or "_magnitude2.nii" in name:
         return 2
     return None
+
+
+def _combine_image_type(image_type, image_type_text):
+    """Merges ImageType and ImageTypeText into one list, dropping duplicates.
+    Returns image_type unchanged if neither is a list."""
+    combined = []
+    for val in (image_type, image_type_text):
+        if isinstance(val, list):
+            combined += [x for x in val if x not in combined]
+    return combined or image_type
 
 
 def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
@@ -60,6 +70,12 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     niftis = file_df[file_df["file.type"] == "nifti"].copy()
+    niftis["ImageType"] = [
+        _combine_image_type(*vals)
+        for vals in zip(
+            niftis["file.info.ImageType"], niftis["file.info.ImageTypeText"]
+        )
+    ]
     niftis["magnitude_type"] = niftis["file.name"].apply(_magnitude_type)
     niftis["_is_deriv"] = niftis["file.name"].str.contains(
         _NIFTI_DERIV_RE, regex=True, na=False
@@ -84,10 +100,10 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
     no_nifti_rows = dicom_rows.loc[
         dicom_rows.index.difference(canonical_niftis.index)
     ].copy()
-    for field in ("SeriesDescription", "ImageType"):
-        no_nifti_rows[f"file.info.{field}"] = no_nifti_rows[
-            f"file.info.header.dicom.{field}"
-        ]
+    no_nifti_rows["file.info.SeriesDescription"] = no_nifti_rows[
+        "file.info.header.dicom.SeriesDescription"
+    ]
+    no_nifti_rows["ImageType"] = no_nifti_rows["file.info.header.dicom.ImageType"]
     acq_df = pd.concat([canonical_niftis, no_nifti_rows])
 
     # Backfill fields that only exist on dicom
@@ -111,6 +127,8 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
         "file.name",
         "file.tags",
         "file.created",
+        "file.info.ImageType",
+        "file.info.ImageTypeText",
         "_is_deriv",
         "magnitude_type",
     )
@@ -227,7 +245,7 @@ def reproin_filter(row: pd.Series) -> str:
     if label_re in IGNORE_SCANS:
         return label_ignore
 
-    image_type = row["file.info.ImageType"]
+    image_type = row["ImageType"]
     # to-do: add exception for mp2rage
     # if image_type and "DERIVED" in image_type:
     #    return label_ignore
@@ -664,7 +682,7 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
                 err_msg
             )
         elif len(group) == 2:
-            group["norm"] = group["file.info.ImageType"].apply(
+            group["norm"] = group["ImageType"].apply(
                 lambda x: x is not None and "NORM" in x
             )
 

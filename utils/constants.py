@@ -21,6 +21,7 @@ DATAVIEW_COLUMNS = {
     "file.info.header.dicom.AcquisitionDate": str,
     "file.info.header.dicom.AcquisitionDateTime": str,
     "file.info.ImageType": list,
+    "file.info.ImageTypeText": list,
     "file.info.ManufacturersModelName": str,
     "file.info.SoftwareVersions": str,
     "file.info.ScanningSequence": str,
@@ -53,7 +54,7 @@ DATAVIEW_COLUMNS = {
     "acquisition.timestamp": str,
 }
 ACQ_PARAMS = (
-    "file.info.ImageType",
+    "ImageType",
     "file.info.ManufacturersModelName",
     "file.info.SoftwareVersions",
     "file.info.ScanningSequence",
