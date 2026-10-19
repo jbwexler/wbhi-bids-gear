@@ -668,45 +668,71 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
 
     subject = df["subject.label"].iloc[0]
 
+    # Note: need to handle ASL/Angio (eg sub-G5GRGM)
     for i, group in rec_df.groupby(["reproin", "group"]):
         if len(group) == 1:
             continue
 
-        if len(group) > 2:
-            err_msg = (
-                "Subject %s has more than 2 acquisitions in the same rec group."
-                % subject
-            )
-            log.error(err_msg)
-            df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = (
-                err_msg
-            )
-        elif len(group) == 2:
-            group["norm"] = group["ImageType"].apply(
-                lambda x: x is not None and "NORM" in x
-            )
+        reproin = group["reproin"].iloc[0]
 
-            if len(group[group["norm"]]) != 1:
-                err_msg = (
-                    "Subject %s has a rec group with 0 or 2 NORM acquisitions" % subject
+        rec_type_dict = {
+            "derived": {"DERIVED"},
+            "norm": {"NORM"},
+            "dis": {"DIS3D", "DIS2D"},
+        }
+        for label, keywords in rec_type_dict.items():
+            group[label] = group["ImageType"].apply(
+                lambda x: isinstance(x, list) and bool(keywords & set(x))
+            )
+        memprage_type_dict = {
+            "memprage": "memprage|mpr",
+            "rms": "rms",
+        }
+        for label, regex in memprage_type_dict.items():
+            group[label] = group["acquisition.label"].str.contains(regex, case=False)
+
+        ignore = pd.Series(False, index=group.index)
+
+        if group["derived"].any():
+            if not reproin.startswith("anat-T1w"):
+                err_msg = "Subject %s's %s group contains DERIVED but is not T1w" % (
+                    subject,
+                    reproin,
                 )
                 log.error(err_msg)
                 df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = (
                     err_msg
                 )
-            else:
-                ### Remove this when ready for recs
+
+            ignore |= group["derived"]
+        if group["norm"].any():
+            ignore |= ~group["norm"]
+        if group["dis"].any():
+            if (~ignore).sum() > 2:
                 err_msg = (
-                    "For now, skipping sessions with potential reconstructions: %s"
+                    "Subject %s has more than 2 acquisitions in the same DIS rec group."
                     % subject
                 )
-                log.info(err_msg)
+                log.error(err_msg)
                 df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = (
                     err_msg
                 )
-                ###
-                # acq_id_update = group[group["norm"]]["acquisition.id"].iloc[0]
-                # df.loc[df["acquisition.id"] == acq_id_update, "reproin"] += "_rec-norm"
+            ignore |= ~group["dis"]
+        if (group["memprage"] & group["rms"]).any():
+            ignore |= group["memprage"] & ~group["rms"]
+
+        ignore_ids = group.loc[ignore, "acquisition.id"]
+        df.loc[df["acquisition.id"].isin(ignore_ids), "reproin"] += "_ignore-BIDS"
+
+        if (~ignore).sum() != 1:
+            err_msg = (
+                "Subject %s does not have exactly 1 included acq in its %s rec group: %s"
+                % (subject, reproin, group["acquisition.label"])
+            )
+            log.error(err_msg)
+            df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = (
+                err_msg
+            )
 
     return df
 
