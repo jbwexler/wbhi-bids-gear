@@ -198,6 +198,7 @@ def check_asl_and_spectroscopy(file_df: pd.DataFrame) -> pd.DataFrame:
             or x["file.classification.Intent"]
             .apply(lambda i: isinstance(i, list) and "Spectroscopy" in i)
             .any()
+            or x["acquisition.label"].str.startswith("csf_flow", na=False).any()
         )
     )
 
