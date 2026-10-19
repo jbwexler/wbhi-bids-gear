@@ -136,6 +136,16 @@ def skip_multiple_dicoms(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df[~file_df["subject.label"].isin(mult_df_subs)]
 
 
+def partition_ignored(
+    acq_df: pd.DataFrame, ignored_df: pd.DataFrame = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Moves acquisitions whose reproin contains '_ignore-BIDS' from acq_df into
+    ignored_df. Returns (acq_df, ignored_df)."""
+    is_ignored = acq_df["reproin"].str.contains("_ignore-BIDS", na=False)
+    ignored_df = pd.concat([ignored_df, acq_df[is_ignored]])
+    return acq_df[~is_ignored], ignored_df
+
+
 def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     """Determines which acquisitions should be bidsified and adds columns containing
     appropriate reproin labels, as well as fmap, rec, run and sbref info. For acquisitions
@@ -164,9 +174,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     acq_df = check_asl_and_spectroscopy(acq_df)
     acq_df = check_anat_presence(acq_df)
 
-    is_ignored = acq_df["reproin"].str.contains("_ignore-BIDS", na=False)
-    ignored_df = acq_df[is_ignored]
-    acq_df = acq_df[~is_ignored]
+    acq_df, ignored_df = partition_ignored(acq_df)
 
     acq_df = (
         acq_df.groupby("session.id")[acq_df.columns]
@@ -174,16 +182,16 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    # add_fmap may append _ignore-BIDS to unmatched fmaps; re-partition
-    is_ignored = acq_df["reproin"].str.contains("_ignore-BIDS", na=False)
-    ignored_df = pd.concat([ignored_df, acq_df[is_ignored]])
-    acq_df = acq_df[~is_ignored]
+    acq_df, ignored_df = partition_ignored(acq_df, ignored_df)
 
     acq_df = (
         acq_df.groupby("session.id")[acq_df.columns]
         .apply(add_rec)
         .reset_index(drop=True)
     )
+
+    acq_df, ignored_df = partition_ignored(acq_df, ignored_df)
+
     acq_df = (
         acq_df.groupby(["session.id", "reproin"])[acq_df.columns]
         .apply(add_run)
