@@ -263,6 +263,8 @@ def reproin_filter(row: pd.Series) -> str:
     if validator:
         if validator["datatype"] not in ALLOWED_DATATYPES:
             return label_ignore
+        if validator.get("datatype_suffix") == "scout":
+            return label_ignore
         if validator["datatype"] == "func":
             task = validator.get("task", "")
             if task and (
