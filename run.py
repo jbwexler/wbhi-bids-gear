@@ -233,18 +233,12 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
         rename_df = ses_df[ses_df["reproin"] != ses_df["acquisition.label"]]
         if rename_df.empty:
             continue
-        acqs = [
-            client.get_acquisition(acq_id) for acq_id in rename_df["acquisition.id"]
-        ]
+        rename_ids = rename_df["acquisition.id"].tolist()
 
         # Labels held by acquisitions that aren't being renamed, including those
         # ignored in previous runs, which aren't in file_df.
-        rename_ids = set(rename_df["acquisition.id"])
-        taken = {
-            acq.label
-            for acq in client.get_session(ses_id).acquisitions()
-            if acq.id not in rename_ids
-        }
+        current = {acq.id: acq.label for acq in client.get_session_acquisitions(ses_id)}
+        taken = {label for acq_id, label in current.items() if acq_id not in rename_ids}
         labels = []
         for reproin in rename_df["reproin"]:
             if reproin.endswith("_ignore-BIDS"):
@@ -253,12 +247,14 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
             labels.append(reproin)
         file_df.loc[rename_df.index, "reproin"] = labels
 
-        # Rename to temporary labels first so no acquisition is renamed to a label
-        # that another acquisition still holds.
-        for acq in acqs:
-            acq.update({"label": "tmp-%s" % acq.id})
-        for acq, label in zip(acqs, labels):
-            acq.update({"label": label})
+        # Acquisitions holding a label that another acquisition is being renamed to
+        # get a temporary label first.
+        targets = set(labels)
+        for acq_id in rename_ids:
+            if current.get(acq_id) in targets:
+                client.modify_acquisition(acq_id, {"label": "tmp-%s" % acq_id})
+        for acq_id, label in zip(rename_ids, labels):
+            client.modify_acquisition(acq_id, {"label": label})
 
     return file_df
 
