@@ -205,6 +205,17 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([acq_df, ignored_df], ignore_index=True)
 
 
+def unique_ignore_label(label: str, taken: set) -> str:
+    """If label is taken, inserts the lowest free number before '_ignore-BIDS', e.g.
+    'Sag-3D-ME-GRE_1_ignore-BIDS'. The suffix stays last so classify() still skips it."""
+    base = label.removesuffix("_ignore-BIDS")
+    n = 1
+    while label in taken:
+        label = "%s_%d_ignore-BIDS" % (base, n)
+        n += 1
+    return label
+
+
 def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df.copy()
     breakpoint()
@@ -218,18 +229,36 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
         lambda x: x["error"].apply(lambda x: not x).all()
     )
 
-    for name, ses_df in file_df.groupby("session.id"):
+    for ses_id, ses_df in file_df.groupby("session.id"):
         rename_df = ses_df[ses_df["reproin"] != ses_df["acquisition.label"]]
+        if rename_df.empty:
+            continue
         acqs = [
             client.get_acquisition(acq_id) for acq_id in rename_df["acquisition.id"]
         ]
 
+        # Labels held by acquisitions that aren't being renamed, including those
+        # ignored in previous runs, which aren't in file_df.
+        rename_ids = set(rename_df["acquisition.id"])
+        taken = {
+            acq.label
+            for acq in client.get_session(ses_id).acquisitions()
+            if acq.id not in rename_ids
+        }
+        labels = []
+        for reproin in rename_df["reproin"]:
+            if reproin.endswith("_ignore-BIDS"):
+                reproin = unique_ignore_label(reproin, taken)
+            taken.add(reproin)
+            labels.append(reproin)
+        file_df.loc[rename_df.index, "reproin"] = labels
+
         # Rename to temporary labels first so no acquisition is renamed to a label
         # that another acquisition still holds.
-        for acq, reproin in zip(acqs, rename_df["reproin"]):
-            acq.update({"label": reproin + "_tmp"})
-        for acq, reproin in zip(acqs, rename_df["reproin"]):
-            acq.update({"label": reproin})
+        for acq in acqs:
+            acq.update({"label": "tmp-%s" % acq.id})
+        for acq, label in zip(acqs, labels):
+            acq.update({"label": label})
 
     return file_df
 
