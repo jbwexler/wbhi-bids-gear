@@ -730,7 +730,7 @@ def add_rec(df: pd.DataFrame) -> pd.DataFrame:
         if (~ignore).sum() != 1:
             err_msg = (
                 "Subject %s does not have exactly 1 included acq in its %s rec group: %s"
-                % (subject, reproin, group["acquisition.label"])
+                % (subject, reproin, group["acquisition.label"].tolist())
             )
             log.error(err_msg)
             df.loc[df["acquisition.id"].isin(group["acquisition.id"]), "error"] = (
@@ -744,6 +744,26 @@ def _is_empty(val) -> bool:
     if isinstance(val, list):
         return len(val) == 0
     return pd.isna(val)
+
+
+def _describe_missing_params(
+    labels: pd.Series, empty_mask: pd.DataFrame, missing_cols: list
+) -> str:
+    """Lists each missing parameter with the acquisitions missing it, e.g.
+    'EchoTime (rest_1, rest_2)'."""
+    return "; ".join(
+        "%s (%s)"
+        % (col.removeprefix("file.info."), ", ".join(labels[empty_mask[col].values]))
+        for col in missing_cols
+    )
+
+
+def _group_mismatched_runs(labels: pd.Series, params_df: pd.DataFrame) -> str:
+    """Groups runs with identical parameters, e.g. '[T1w_1] vs [T1w_2, T1w_3]'."""
+    groups = {}
+    for key, label in zip(params_df.astype(str).itertuples(index=False), labels):
+        groups.setdefault(tuple(key), []).append(label)
+    return " vs ".join("[%s]" % ", ".join(lbls) for lbls in groups.values())
 
 
 def get_acq_params(row: pd.Series) -> pd.Series:
@@ -790,7 +810,9 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
                 err_msg = "Subject %s is missing acquisition parameters for %s: %s" % (
                     subject,
                     reproin,
-                    missing_cols,
+                    _describe_missing_params(
+                        run_df["acquisition.label"], empty_mask, missing_cols
+                    ),
                 )
                 log.error(err_msg)
                 df.loc[:, "error"] = err_msg
@@ -798,11 +820,15 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
 
             unique_df = unique_df.apply(
                 lambda col: col.map(lambda x: tuple(x) if isinstance(x, list) else x)
-            ).drop_duplicates()
-            if len(unique_df) > 1:
+            )
+            if len(unique_df.drop_duplicates()) > 1:
                 err_msg = (
                     "Subject %s has runs with mismatched acquisition parameters for %s: %s"
-                    % (subject, reproin, list(unique_df.index))
+                    % (
+                        subject,
+                        reproin,
+                        _group_mismatched_runs(run_df["acquisition.label"], unique_df),
+                    )
                 )
                 log.error(err_msg)
                 df.loc[:, "error"] = err_msg
@@ -871,7 +897,7 @@ def add_sbref(df: pd.DataFrame()):
                     % (
                         sbref["acquisition.label"],
                         sbref["subject.label"],
-                        match["acquisition.label"],
+                        match["acquisition.label"].tolist(),
                     )
                 )
                 log.error(err_msg)
