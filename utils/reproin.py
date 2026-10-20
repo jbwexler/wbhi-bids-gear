@@ -914,17 +914,20 @@ def add_sbref(df: pd.DataFrame()):
 
 
 def check_duplicate_reproin(df: pd.DataFrame()) -> pd.DataFrame():
-    """Returns df if there are not duplicates in the 'reproin' column"""
+    """Sets error if multiple acquisitions in the session share a reproin. Ignored
+    acquisitions are skipped since they won't be bidsified."""
     df = df.copy()
-    duplicated = df[df["reproin"].duplicated()]
+    is_dup = df["reproin"].duplicated(keep=False) & ~df["reproin"].str.contains(
+        "_ignore-BIDS", na=False
+    )
 
-    if not duplicated.empty:
-        subject_label = df["subject.label"].iloc[0]
+    if is_dup.any():
+        dups = df[is_dup].groupby("reproin")["acquisition.label"].agg(list)
         err_msg = "Subject %s contains a session with duplicate reproins: %s" % (
-            subject_label,
-            duplicated,
+            df["subject.label"].iloc[0],
+            "; ".join("%s %s" % (reproin, labels) for reproin, labels in dups.items()),
         )
         log.error(err_msg)
-        return None
+        df["error"] = err_msg
 
     return df

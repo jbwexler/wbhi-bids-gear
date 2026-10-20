@@ -210,13 +210,13 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df.copy()
     breakpoint()
 
-    file_df = file_df.groupby("subject.id").filter(
-        lambda x: x["error"].apply(lambda x: not x).all()
-    )
     file_df = (
         file_df.groupby("session.id")[file_df.columns]
         .apply(check_duplicate_reproin)
         .reset_index(drop=True)
+    )
+    file_df = file_df.groupby("subject.id").filter(
+        lambda x: x["error"].apply(lambda x: not x).all()
     )
 
     for name, ses_df in file_df.groupby("session.id"):
