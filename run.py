@@ -5,7 +5,6 @@ import logging
 import os
 import pip
 import sys
-from datetime import datetime, timedelta
 import time
 import pandas as pd
 from flywheel import ProjectOutput
@@ -268,38 +267,32 @@ def wait_for_jobs(job_ids: list[str]) -> list:
     return finished
 
 
-def tag_and_email(project: ProjectOutput) -> None:
-    cutoff = (datetime.now() - timedelta(hours=6)).isoformat()
+def tag_and_email(jobs: list) -> None:
+    """Tags each job's subject's sessions as bidsified or bids-failed, and emails
+    the labels of subjects whose job didn't complete."""
+    failed_subjects = []
+    for job in jobs:
+        sub = client.get_subject(job.parents.subject)
+        if job.state == "complete":
+            add_tag, rm_tag = "bidsified", "bids-failed"
+        else:
+            add_tag, rm_tag = "bids-failed", "bidsified"
+            failed_subjects.append(sub.label)
 
-    failed_q = f"parents.project={project.id},state=failed,gear_info.name=curate-bids,created>{cutoff}"
-    failed_jobs = client.jobs.find(failed_q)
-    failed_job_subjects = [job.parents.subject for job in failed_jobs]
-    for sub_id in failed_job_subjects:
-        sub = client.get_subject(sub_id)
         for ses in sub.sessions():
-            if "bids-failed" not in ses.tags:
-                ses.add_tag("bids-failed")
-            if "bidsified" in ses.tags:
-                ses.delete_tag("bidsified")
+            if add_tag not in ses.tags:
+                ses.add_tag(add_tag)
+            if rm_tag in ses.tags:
+                ses.delete_tag(rm_tag)
 
-    complete_q = f"parents.project={project.id},state=complete,gear_info.name=curate-bids,created>{cutoff}"
-    complete_jobs = client.jobs.find(complete_q)
-    complete_job_subjects = [job.parents.subject for job in complete_jobs]
-    for sub_id in complete_job_subjects:
-        sub = client.get_subject(sub_id)
-        for ses in sub.sessions():
-            if "bids-failed" in ses.tags:
-                ses.delete_tag("bids-failed")
-            if "bidsified" not in ses.tags:
-                ses.add_tag("bidsified")
-
-    send_email(
-        "failed bids-curate jobs",
-        ", ".join(failed_job_subjects),
-        config["gmail_address"],
-        ADMIN_EMAIL,
-        os.environ["GMAIL_PASSWORD"],
-    )
+    if failed_subjects:
+        send_email(
+            "failed bids-curate jobs",
+            ", ".join(failed_subjects),
+            config["gmail_address"],
+            ADMIN_EMAIL,
+            os.environ["GMAIL_PASSWORD"],
+        )
 
 
 def mv_bidsified(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
@@ -331,8 +324,8 @@ def main():
     file_df = add_reproin(file_df)
 
     job_ids = submit_bids_jobs(file_df)
-    wait_for_jobs(job_ids)
-    tag_and_email(deid_project)
+    jobs = wait_for_jobs(job_ids)
+    tag_and_email(jobs)
 
     staging_project = client.lookup(f"{group}/staging")
     mv_bidsified(deid_project, staging_project)
