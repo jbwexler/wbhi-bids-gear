@@ -220,16 +220,17 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     for name, ses_df in file_df.groupby("session.id"):
-        for i, row in ses_df.iterrows():
-            if row["reproin"] != row["acquisition.label"]:
-                acq_match_df = ses_df[ses_df["acquisition.label"] == row["reproin"]]
-                if not acq_match_df.empty:
-                    acq_tmp = client.get_acquisition(
-                        acq_match_df["acquisition.id"].iloc[0]
-                    )
-                    acq_tmp.update({"label": row["reproin"] + "_tmp"})
-                acq = client.get_acquisition(row["acquisition.id"])
-                acq.update({"label": row["reproin"]})
+        rename_df = ses_df[ses_df["reproin"] != ses_df["acquisition.label"]]
+        acqs = [
+            client.get_acquisition(acq_id) for acq_id in rename_df["acquisition.id"]
+        ]
+
+        # Rename to temporary labels first so no acquisition is renamed to a label
+        # that another acquisition still holds.
+        for acq, reproin in zip(acqs, rename_df["reproin"]):
+            acq.update({"label": reproin + "_tmp"})
+        for acq, reproin in zip(acqs, rename_df["reproin"]):
+            acq.update({"label": reproin})
 
     return file_df
 
