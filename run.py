@@ -235,21 +235,37 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df
 
 
-def submit_bids_jobs(file_df: pd.DataFrame()):
+def submit_bids_jobs(file_df: pd.DataFrame()) -> list[str]:
+    """Submits a curate-bids job for each subject. Returns the job ids."""
     curate_bids_gear = client.lookup("gears/curate-bids")
+    job_ids = []
     for sub_id in file_df["subject.id"].unique():
         subject = client.get_subject(sub_id)
-        run_gear(curate_bids_gear, {}, {"reset": True}, subject)
+        job_id = run_gear(curate_bids_gear, {}, {"reset": True}, subject)
+        if job_id:
+            job_ids.append(job_id)
+        else:
+            log.error("Failed to submit curate-bids job for subject %s" % subject.label)
+    return job_ids
 
 
-def wait_for_jobs(project: ProjectOutput) -> None:
-    query = f"parents.project={project.id},state=running,gear_info.name=curate-bids"
+def wait_for_jobs(job_ids: list[str]) -> list:
+    """Waits until all jobs have finished. Returns the finished jobs."""
+    pending = set(job_ids)
+    finished = []
     start_time = time.time()
-    while client.jobs.find(query):
-        if time.time() - start_time > WAIT_TIMEOUT:
-            log.error("Wait timeout for copy to complete")
-            sys.exit(1)
-        time.sleep(5)
+    while pending:
+        for job_id in list(pending):
+            job = client.get_job(job_id)
+            if job.state in ("complete", "failed", "cancelled"):
+                finished.append(job)
+                pending.remove(job_id)
+        if pending:
+            if time.time() - start_time > WAIT_TIMEOUT:
+                log.error("Timed out waiting for curate-bids jobs to complete")
+                sys.exit(1)
+            time.sleep(30)
+    return finished
 
 
 def tag_and_email(project: ProjectOutput) -> None:
@@ -314,8 +330,8 @@ def main():
     file_df = classify(file_df)
     file_df = add_reproin(file_df)
 
-    submit_bids_jobs(file_df)
-    wait_for_jobs(deid_project)
+    job_ids = submit_bids_jobs(file_df)
+    wait_for_jobs(job_ids)
     tag_and_email(deid_project)
 
     staging_project = client.lookup(f"{group}/staging")
