@@ -13,6 +13,7 @@ from utils.reproin import (
     check_nifti_presence,
     check_nifti_count,
     check_asl_and_spectroscopy,
+    check_qsm,
     check_anat_presence,
     reproin_filter,
     add_sbref,
@@ -176,6 +177,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     acq_df = check_nifti_presence(acq_df)
     acq_df = check_pydeface(acq_df)
     acq_df = check_asl_and_spectroscopy(acq_df)
+    acq_df = check_qsm(acq_df)
     acq_df = check_anat_presence(acq_df)
 
     acq_df, ignored_df = partition_ignored(acq_df)

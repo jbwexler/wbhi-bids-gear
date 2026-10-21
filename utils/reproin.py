@@ -216,6 +216,24 @@ def check_nifti_count(acq_df: pd.DataFrame) -> pd.DataFrame:
     return acq_df
 
 
+def check_qsm(acq_df: pd.DataFrame) -> pd.DataFrame:
+    """Sets error for subjects with any QSM acquisitions, which aren't supported yet."""
+    acq_df = acq_df.copy()
+
+    is_qsm = acq_df["file.classification.Intent"].apply(
+        lambda x: isinstance(x, list) and "QSM" in x
+    )
+    for subject, group in acq_df[is_qsm].groupby("subject.label"):
+        err_msg = "Subject %s has QSM acquisitions, which aren't supported yet: %s" % (
+            subject,
+            group["acquisition.label"].tolist(),
+        )
+        log.error(err_msg)
+        acq_df.loc[acq_df["subject.label"] == subject, "error"] = err_msg
+
+    return acq_df
+
+
 def check_asl_and_spectroscopy(file_df: pd.DataFrame) -> pd.DataFrame:
     """Removes subjects that have any ASL/perfusion or spectroscopy acquisitions"""
     file_df = file_df.copy()
