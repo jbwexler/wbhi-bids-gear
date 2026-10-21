@@ -49,6 +49,10 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     if file_df.empty:
         log.info("No subjects were found in deid project.")
         sys.exit(0)
+    log.info(
+        "Found %d subjects (%d acquisitions) in deid project."
+        % (file_df["subject.id"].nunique(), file_df["acquisition.id"].nunique())
+    )
 
     bidsified_sessions = file_df[
         file_df["session.tags"].apply(lambda x: "bidsified" in x)
@@ -225,9 +229,15 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
         .apply(check_duplicate_reproin)
         .reset_index(drop=True)
     )
+    n_subjects = file_df["subject.id"].nunique()
     file_df = file_df.groupby("subject.id").filter(
         lambda x: x["error"].apply(lambda x: not x).all()
     )
+    log.info(
+        "%d of %d subjects passed classification."
+        % (file_df["subject.id"].nunique(), n_subjects)
+    )
+    n_renamed = 0
 
     for ses_id, ses_df in file_df.groupby("session.id"):
         rename_df = ses_df[ses_df["reproin"] != ses_df["acquisition.label"]]
@@ -255,7 +265,9 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
                 client.modify_acquisition(acq_id, {"label": "tmp-%s" % acq_id})
         for acq_id, label in zip(rename_ids, labels):
             client.modify_acquisition(acq_id, {"label": label})
+        n_renamed += len(labels)
 
+    log.info("Renamed %d acquisitions." % n_renamed)
     return file_df
 
 
@@ -270,6 +282,7 @@ def submit_bids_jobs(file_df: pd.DataFrame()) -> list[str]:
             job_ids.append(job_id)
         else:
             log.error("Failed to submit curate-bids job for subject %s" % subject.label)
+    log.info("Submitted %d curate-bids jobs." % len(job_ids))
     return job_ids
 
 
@@ -310,6 +323,10 @@ def tag_and_email(jobs: list) -> None:
             if rm_tag in ses.tags:
                 ses.delete_tag(rm_tag)
 
+    log.info(
+        "%d curate-bids jobs completed, %d failed."
+        % (len(jobs) - len(failed_subjects), len(failed_subjects))
+    )
     if failed_subjects:
         send_email(
             "failed bids-curate jobs",
@@ -330,6 +347,7 @@ def mv_bidsified(src_project: ProjectOutput, dst_project: ProjectOutput) -> None
     for i, ses_id in bidsified_df["session.id"].items():
         session = client.get_session(ses_id)
         mv_session(session, dst_project, client)
+    log.info("Moved %d sessions to %s." % (len(bidsified_df), dst_project.label))
 
 
 def main():
