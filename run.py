@@ -11,6 +11,7 @@ from flywheel import ProjectOutput
 from utils.reproin import (
     check_pydeface,
     check_nifti_presence,
+    check_nifti_count,
     check_asl_and_spectroscopy,
     check_anat_presence,
     reproin_filter,
@@ -194,6 +195,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     acq_df, ignored_df = partition_ignored(acq_df, ignored_df)
+    acq_df = check_nifti_count(acq_df)
 
     acq_df = (
         acq_df.groupby(["session.id", "reproin"])[acq_df.columns]

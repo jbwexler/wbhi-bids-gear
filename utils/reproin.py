@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 
 _NIFTI_DERIV_RE = re.compile(r"(?:_ph|_e[2-9]|_imaginary|_real|_magnitude[2-9])\.nii")
+_NIFTI_ECHO_RE = re.compile(r"_e\d+\.nii")
 
 # Shape of each dict in acq_df["nifti_files"]; keys = file_df columns, values = dict keys
 _NIFTI_FILE_FIELDS = {
@@ -184,6 +185,33 @@ def check_nifti_presence(acq_df: pd.DataFrame) -> pd.DataFrame:
             "The following subjects contain acquisition(s) without nifti(s): "
             "\n%s" % no_nii_df[["subject.label", "acquisition.label"]].to_string()
         )
+
+    return acq_df
+
+
+def check_nifti_count(acq_df: pd.DataFrame) -> pd.DataFrame:
+    """Sets error for subjects with any acquisitions containing more than one nifti,
+    unless the acquisition's reproin ends with _ignore-BIDS. func and fmap acquisitions
+    may have multiple niftis if they're all echoes (_e1, _e2, ...). Run after add_rec,
+    which ignores extra recon/echo acquisitions."""
+    acq_df = acq_df.copy()
+
+    names = acq_df["nifti_files"].apply(lambda files: [f["name"] for f in files])
+    all_echoes = names.apply(lambda n: all(_NIFTI_ECHO_RE.search(x) for x in n))
+    allows_echoes = acq_df["reproin"].str.match("func|fmap", na=False)
+    multi_df = acq_df[
+        (names.apply(len) > 1)
+        & ~(allows_echoes & all_echoes)
+        & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False)
+    ]
+
+    for subject, group in multi_df.groupby("subject.label"):
+        err_msg = "Subject %s has acquisitions with multiple niftis: %s" % (
+            subject,
+            group["acquisition.label"].tolist(),
+        )
+        log.error(err_msg)
+        acq_df.loc[acq_df["subject.label"] == subject, "error"] = err_msg
 
     return acq_df
 
