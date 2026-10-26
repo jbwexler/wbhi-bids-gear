@@ -510,11 +510,9 @@ def add_fmap(df: pd.DataFrame()):
     if df.empty:
         return df
 
-    has_fmap = df["file.classification.Intent"].apply(
-        lambda x: isinstance(x, list) and "Fieldmap" in x
-    ) & (df["file.modality"] == "MR")
+    fmap_df = df[df["reproin"].str.startswith("fmap")]
 
-    if not has_fmap.any():
+    if fmap_df.empty:
         return df.reset_index(drop=True)
 
     subject = df["subject.label"].iloc[0]
@@ -530,7 +528,6 @@ def add_fmap(df: pd.DataFrame()):
     # bval / bvec rows) and will fail at runtime under acq_df. Rewrite
     # before removing the early return above.
     # ------------------------------------------------------------------
-    fmap_df = df.copy()
     fmap_related_df = df[df["reproin"].str.startswith(("asl", "func", "dwi"), na=False)]
     if fmap_related_df.empty:
         fmap_df["reproin"] += "_ignore-BIDS"
