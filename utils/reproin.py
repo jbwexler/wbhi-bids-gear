@@ -120,6 +120,10 @@ def build_acq_df(file_df: pd.DataFrame) -> pd.DataFrame:
     acq_df["has_bvec"] = types_by_acq.apply(lambda s: "bvec" in s).reindex(
         acq_df.index, fill_value=False
     )
+    type_counts = file_df.groupby(["acquisition.id", "file.type"]).size().unstack()
+    for file_type in ("bval", "bvec"):
+        counts = type_counts.get(file_type, pd.Series(dtype=int))
+        acq_df["n_" + file_type] = counts.reindex(acq_df.index).fillna(0).astype(int)
 
     # Drop file-level + internal columns
     drop_cols = (
@@ -207,6 +211,28 @@ def check_nifti_count(acq_df: pd.DataFrame) -> pd.DataFrame:
 
     for subject, group in multi_df.groupby("subject.label"):
         err_msg = "Subject %s has acquisitions with multiple niftis: %s" % (
+            subject,
+            group["acquisition.label"].tolist(),
+        )
+        log.error(err_msg)
+        acq_df.loc[acq_df["subject.label"] == subject, "error"] = err_msg
+
+    return acq_df
+
+
+def check_bval_count(acq_df: pd.DataFrame) -> pd.DataFrame:
+    """Sets error for subjects with any acquisitions containing more bval or bvec files
+    than niftis, unless the acquisition's reproin ends with _ignore-BIDS."""
+    acq_df = acq_df.copy()
+
+    n_nifti = acq_df["nifti_files"].apply(len)
+    multi_df = acq_df[
+        ((acq_df["n_bval"] > n_nifti) | (acq_df["n_bvec"] > n_nifti))
+        & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False)
+    ]
+
+    for subject, group in multi_df.groupby("subject.label"):
+        err_msg = "Subject %s has acquisitions with multiple bval/bvec pairs: %s" % (
             subject,
             group["acquisition.label"].tolist(),
         )
