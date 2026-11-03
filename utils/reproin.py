@@ -841,12 +841,20 @@ def _describe_missing_params(
     )
 
 
-def _group_mismatched_runs(labels: pd.Series, params_df: pd.DataFrame) -> str:
-    """Groups runs with identical parameters, e.g. '[T1w_1] vs [T1w_2, T1w_3]'."""
+def _group_mismatched_runs(
+    labels: pd.Series, params_df: pd.DataFrame, max_labels: int = 3
+) -> str:
+    """Groups runs with identical parameters, e.g. '[T1w_1] vs [T1w_2, T1w_3]'.
+    Groups with more than max_labels runs are truncated, e.g. '[T1w_1, T1w_2, +4 more]'."""
     groups = {}
     for key, label in zip(params_df.astype(str).itertuples(index=False), labels):
         groups.setdefault(tuple(key), []).append(label)
-    return " vs ".join("[%s]" % ", ".join(lbls) for lbls in groups.values())
+    parts = []
+    for lbls in groups.values():
+        if len(lbls) > max_labels:
+            lbls = lbls[: max_labels - 1] + ["+%d more" % (len(lbls) - max_labels + 1)]
+        parts.append("[%s]" % ", ".join(lbls))
+    return " vs ".join(parts)
 
 
 def get_acq_params(row: pd.Series) -> pd.Series:
