@@ -315,13 +315,9 @@ def reproin_filter(row: pd.Series) -> str:
     # Utilize acq label if already in reproin format. Otherwise, create a reproin label
     label_re = re.sub(r"_\d$", "", label_lower)
     label_ignore = label + "_ignore-BIDS"
-    if label_re in IGNORE_SCANS:
+    if label_re in IGNORE_SCANS or "t1_tse_lc" in label_lower:
         return label_ignore
 
-    image_type = row["ImageType"]
-    # to-do: add exception for mp2rage
-    # if image_type and "DERIVED" in image_type:
-    #    return label_ignore
     try:
         validator = parse_series_spec(label)
     except IndexError:
@@ -366,7 +362,9 @@ def reproin_filter(row: pd.Series) -> str:
 
         if label_lower.startswith("gobrain_"):
             return label_ignore
-        elif label_re.endswith(("physiolog", "setter", "tensor")):
+        elif label_re.endswith(
+            ("physiolog", "setter", "tensor", "tensor_b0", "neuromelanin")
+        ):
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
