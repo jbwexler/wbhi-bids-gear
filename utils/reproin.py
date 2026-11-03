@@ -406,6 +406,9 @@ def reproin_filter(row: pd.Series) -> str:
             return _add_dir("func_task-rest", label)
         elif intent and "Fieldmap" in intent:
             return _add_dir("fmap", label)
+        elif not intent and not measurement and "sbref" in label_lower:
+            # Placeholder; add_sbref relabels it from its matched func/dwi acquisition
+            return "sbref"
 
     return label_ignore
 
