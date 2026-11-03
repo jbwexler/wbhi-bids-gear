@@ -326,6 +326,8 @@ def reproin_filter(row: pd.Series) -> str:
     label_ignore = label + "_ignore-BIDS"
     if label_re in IGNORE_SCANS or "t1_tse_lc" in label_lower:
         return label_ignore
+    if label_lower.startswith("highreshippocampus"):
+        return "anat-T2w_acq-hippocampus"
 
     try:
         validator = parse_series_spec(label)
