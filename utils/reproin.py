@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 _NIFTI_DERIV_RE = re.compile(r"(?:_ph|_e[2-9]|_imaginary|_real|_magnitude[2-9])\.nii")
 _NIFTI_ECHO_RE = re.compile(r"_e\d+\.nii")
+_DIR_RE = re.compile(r"(?i)(?<![A-Za-z])(AP|PA|LR|RL)(?![A-Za-z])")
 
 # Shape of each dict in acq_df["nifti_files"]; keys = file_df columns, values = dict keys
 _NIFTI_FILE_FIELDS = {
@@ -306,6 +307,14 @@ def check_anat_presence(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df
 
 
+def _add_dir(reproin: str, label: str) -> str:
+    """Appends a dir- entity if label contains exactly one phase-encoding direction."""
+    dirs = {d.upper() for d in _DIR_RE.findall(label)}
+    if len(dirs) == 1:
+        return reproin + "_dir-" + dirs.pop()
+    return reproin
+
+
 def reproin_filter(row: pd.Series) -> str:
     label = row["file.info.SeriesDescription"]
     if not isinstance(label, str):
@@ -354,6 +363,8 @@ def reproin_filter(row: pd.Series) -> str:
             new_label += "_task-" + validator["task"]
         if validator.get("acq") and validator["acq"] != "None":
             new_label += "_acq-" + validator["acq"]
+        if validator["datatype"] in ("func", "dwi", "fmap"):
+            new_label = _add_dir(new_label, label)
         return new_label
     else:
         measurement = row["file.classification.Measurement"]
@@ -369,7 +380,7 @@ def reproin_filter(row: pd.Series) -> str:
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
         elif label_lower.startswith("se_distortion"):
-            return "fmap"
+            return _add_dir("fmap", label)
         elif measurement and "Perfusion" in measurement:
             return "asl"
         elif intent and "Structural" in intent:
@@ -385,16 +396,16 @@ def reproin_filter(row: pd.Series) -> str:
                         return "anat-T2w"
                 elif "Diffusion" in measurement:
                     if not label_re.endswith(DWI_SUFFIXES_IGNORE):
-                        return "dwi"
+                        return _add_dir("dwi", label)
         elif (
             intent
             and "Functional" in intent
             and label_lower
             and ("rest" in label_lower or "rsfmri" in label_lower)
         ):
-            return "func_task-rest"
+            return _add_dir("func_task-rest", label)
         elif intent and "Fieldmap" in intent:
-            return "fmap"
+            return _add_dir("fmap", label)
 
     return label_ignore
 
