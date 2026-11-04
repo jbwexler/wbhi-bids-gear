@@ -381,7 +381,7 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
             return label_ignore
-        elif label_lower.startswith("se_distortion"):
+        elif label_lower.startswith(("se_distortion", "abcd_topup")):
             return _add_dir("fmap", label)
         elif measurement and "Perfusion" in measurement:
             return "asl"
