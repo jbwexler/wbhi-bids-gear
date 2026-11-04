@@ -363,6 +363,10 @@ def tag_and_email(jobs: list) -> None:
         % (len(jobs) - len(failed_subjects), len(failed_subjects))
     )
     if failed_subjects:
+        log.error(
+            "curate-bids jobs failed for the following subjects, which won't be moved: %s"
+            % failed_subjects
+        )
         send_email(
             "failed bids-curate jobs",
             ", ".join(failed_subjects),

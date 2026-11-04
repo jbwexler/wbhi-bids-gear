@@ -301,7 +301,10 @@ def check_anat_presence(file_df: pd.DataFrame) -> pd.DataFrame:
     if not no_anat_df.empty:
         log.warning(
             "The following sessions have no anatomical acquisitions and will be skipped: "
-            "\n%s" % no_anat_df["session.id"].unique()
+            "\n%s"
+            % no_anat_df[["subject.label", "session.label", "session.id"]]
+            .drop_duplicates()
+            .to_string()
         )
 
     return file_df
