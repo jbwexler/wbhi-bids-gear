@@ -118,6 +118,34 @@ def rename_sessions(df: pd.DataFrame()) -> None:
                     session.update({"label": new_session_label})
 
 
+def skip_gsp_subjects(file_df: pd.DataFrame) -> pd.DataFrame:
+    """Removes any subjects containing GSP (graphic slice positioning) images, which are
+    sometimes uploaded as a single dicom alongside the series zip and would be bidsified
+    along with it. Logs the GSP files and the niftis converted from them for deletion."""
+    image_type_cols = [
+        "file.info.header.dicom.ImageType",
+        "file.info.ImageType",
+        "file.info.ImageTypeText",
+    ]
+    is_gsp = (
+        file_df[image_type_cols]
+        .map(lambda x: isinstance(x, list) and "GSP" in x)
+        .any(axis=1)
+    )
+    gsp_subs = file_df[is_gsp]["subject.label"].unique()
+
+    if gsp_subs.size > 0:
+        log.warning(
+            "Skipping the following subjects because they contain GSP files, which "
+            "should be deleted: \n%s"
+            % file_df[is_gsp][
+                ["subject.label", "session.label", "acquisition.label", "file.name"]
+            ].to_string()
+        )
+
+    return file_df[~file_df["subject.label"].isin(gsp_subs)]
+
+
 def skip_multiple_dicoms(file_df: pd.DataFrame) -> pd.DataFrame:
     """Removes any subjects containing any acquisitions with multiple dicoms."""
     file_df = file_df.copy()
@@ -159,6 +187,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     file_df = file_df.copy()
 
     file_df = file_df[~file_df["acquisition.label"].str.endswith("_ignore-BIDS")]
+    file_df = skip_gsp_subjects(file_df)
     file_df = skip_multiple_dicoms(file_df)
 
     if file_df.empty:
