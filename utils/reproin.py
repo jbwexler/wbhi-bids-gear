@@ -249,7 +249,7 @@ def check_qsm(acq_df: pd.DataFrame) -> pd.DataFrame:
 
     is_qsm = acq_df["file.classification.Intent"].apply(
         lambda x: isinstance(x, list) and "QSM" in x
-    )
+    ).astype(bool)
     for subject, group in acq_df[is_qsm].groupby("subject.label"):
         err_msg = "Subject %s has QSM acquisitions, which aren't supported yet: %s" % (
             subject,

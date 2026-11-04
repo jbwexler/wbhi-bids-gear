@@ -210,6 +210,10 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
     acq_df = check_qsm(acq_df)
     acq_df = check_anat_presence(acq_df)
 
+    if acq_df.empty:
+        log.info("No subjects passed the presence checks.")
+        sys.exit(0)
+
     acq_df, ignored_df = partition_ignored(acq_df)
 
     acq_df = (
