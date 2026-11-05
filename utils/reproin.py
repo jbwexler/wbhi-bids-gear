@@ -845,10 +845,11 @@ def _describe_missing_params(
 
 
 def _group_mismatched_runs(
-    labels: pd.Series, params_df: pd.DataFrame, max_labels: int = 3
+    labels: pd.Series, params_df: pd.DataFrame, max_labels: int = 3, max_groups: int = 3
 ) -> str:
     """Groups runs with identical parameters, e.g. '[T1w_1] vs [T1w_2, T1w_3]'.
-    Groups with more than max_labels runs are truncated, e.g. '[T1w_1, T1w_2, +4 more]'."""
+    Groups with more than max_labels runs are truncated, e.g. '[T1w_1, T1w_2, +4 more]',
+    and more than max_groups groups are truncated, e.g. '[T1w_1] vs [T1w_2] vs +5 more groups'."""
     groups = {}
     for key, label in zip(params_df.astype(str).itertuples(index=False), labels):
         groups.setdefault(tuple(key), []).append(label)
@@ -857,6 +858,11 @@ def _group_mismatched_runs(
         if len(lbls) > max_labels:
             lbls = lbls[: max_labels - 1] + ["+%d more" % (len(lbls) - max_labels + 1)]
         parts.append("[%s]" % ", ".join(lbls))
+    if len(parts) > max_groups:
+        n_more = len(parts) - max_groups + 1
+        parts = parts[: max_groups - 1] + [
+            "+%d more groups (%d runs)" % (n_more, sum(map(len, list(groups.values())[max_groups - 1 :])))
+        ]
     return " vs ".join(parts)
 
 
