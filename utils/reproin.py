@@ -243,49 +243,50 @@ def check_bval_count(acq_df: pd.DataFrame) -> pd.DataFrame:
     return acq_df
 
 
-def check_qsm(acq_df: pd.DataFrame) -> pd.DataFrame:
-    """Sets error for subjects with any QSM acquisitions, which aren't supported yet."""
+def check_unsupported(acq_df: pd.DataFrame, max_examples: int = 3) -> pd.DataFrame:
+    """Removes subjects that have any ASL/perfusion, spectroscopy, CSF flow, QSM or
+    fieldmap acquisitions, which aren't supported yet. Logs the number of subjects
+    skipped for each combination of reasons, with up to max_examples examples."""
     acq_df = acq_df.copy()
 
-    is_qsm = acq_df["file.classification.Intent"].apply(
-        lambda x: isinstance(x, list) and "QSM" in x
-    ).astype(bool)
-    for subject, group in acq_df[is_qsm].groupby("subject.label"):
-        err_msg = "Subject %s has QSM acquisitions, which aren't supported yet: %s" % (
-            subject,
-            group["acquisition.label"].tolist(),
+    def has_intent(intent):
+        return (
+            acq_df["file.classification.Intent"]
+            .apply(lambda x: isinstance(x, list) and intent in x)
+            .astype(bool)
         )
-        log.error(err_msg)
-        acq_df.loc[acq_df["subject.label"] == subject, "error"] = err_msg
 
-    return acq_df
+    unsupported = {
+        "ASL/perfusion": acq_df["reproin"].str.startswith("asl", na=False),
+        "spectroscopy": has_intent("Spectroscopy"),
+        "CSF flow": acq_df["acquisition.label"].str.startswith("csf_flow", na=False),
+        "QSM": has_intent("QSM"),
+        "fieldmap": acq_df["reproin"].str.startswith("fmap", na=False)
+        & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False),
+    }
+    is_unsupported = pd.concat(unsupported, axis=1).any(axis=1).astype(bool)
+    unsupported_df = acq_df[is_unsupported]
 
-
-def check_asl_and_spectroscopy(file_df: pd.DataFrame) -> pd.DataFrame:
-    """Removes subjects that have any ASL/perfusion or spectroscopy acquisitions"""
-    file_df = file_df.copy()
-
-    excluded_df = file_df.groupby("subject.label").filter(
-        lambda x: (
-            x["reproin"].str.startswith("asl", na=False).any()
-            or x["file.classification.Intent"]
-            .apply(lambda i: isinstance(i, list) and "Spectroscopy" in i)
-            .any()
-            or x["acquisition.label"].str.startswith("csf_flow", na=False).any()
-        )
-    )
-
-    file_df = file_df[
-        ~file_df["subject.label"].isin(excluded_df["subject.label"].unique())
-    ]
-
-    if not excluded_df.empty:
+    if not unsupported_df.empty:
+        reasons = {}
+        for subject, group in unsupported_df.groupby("subject.label"):
+            reason = ", ".join(
+                t for t, mask in unsupported.items() if mask[group.index].any()
+            )
+            example = "%s/%s" % (subject, group["acquisition.label"].iloc[0])
+            reasons.setdefault(reason, []).append(example)
+        width = max(map(len, reasons))
+        rows = [
+            "%5d  %s  e.g. %s"
+            % (len(subs), reason.ljust(width), ", ".join(subs[:max_examples]))
+            for reason, subs in sorted(reasons.items(), key=lambda x: -len(x[1]))
+        ]
         log.warning(
-            "The following subjects have ASL/perfusion or spectroscopy acquisitions and will be skipped: "
-            "\n%s" % excluded_df["subject.label"].unique()
+            "%d subjects have unsupported acquisitions and will be skipped:\n%s"
+            % (unsupported_df["subject.label"].nunique(), "\n".join(rows))
         )
 
-    return file_df
+    return acq_df[~acq_df["subject.label"].isin(unsupported_df["subject.label"])]
 
 
 def check_anat_presence(file_df: pd.DataFrame) -> pd.DataFrame:
@@ -558,10 +559,7 @@ def add_fmap(df: pd.DataFrame()):
     if fmap_df.empty:
         return df.reset_index(drop=True)
 
-    subject = df["subject.label"].iloc[0]
-    err_msg = "Subject %s has fieldmap(s) and will be skipped." % subject
-    log.warning(err_msg)
-    df.loc[:, "error"] = err_msg
+    # check_unsupported removes subjects with fieldmaps until the port below is done.
     return df.reset_index(drop=True)
 
     # ------------------------------------------------------------------
