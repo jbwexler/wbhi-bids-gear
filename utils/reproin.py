@@ -334,7 +334,8 @@ def reproin_filter(row: pd.Series) -> str:
         return "anat-T2w_acq-hippocampus"
 
     try:
-        validator = parse_series_spec(label)
+        # '-run-' isn't valid reproin; heudiconv would fold it into the previous entity
+        validator = parse_series_spec(label.replace("-run-", "_run-"))
     except IndexError:
         validator = {}
     if (
