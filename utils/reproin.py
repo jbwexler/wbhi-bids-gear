@@ -459,7 +459,7 @@ def rm_acq_labels(df: pd.DataFrame()) -> pd.DataFrame():
 def classify_fmap_acq(image_type_list: list) -> str:
     """Determines the type of fieldmap file (phase, magnitude or diffusion) based on
     the presence of corresponding strings in the ImageType dict."""
-    if not image_type_list:
+    if not isinstance(image_type_list, list) or not image_type_list:
         return None
     elif "M" in image_type_list:
         return "magnitude"
@@ -509,10 +509,7 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
     if not fmap_file_types["diffusion"].empty:
         non_phase = fmap_file_types["diffusion"]
 
-        if (
-            group[group["file.type"] == "bval"].empty
-            or group[group["file.type"] == "bvec"].empty
-        ):
+        if not group["has_bval"].any() or not group["has_bvec"].any():
             err_msg = "Subject %s has diffusion fmaps without bval/bvecs." % subject
             log.error(err_msg)
             group.loc[:, "error"] = err_msg
@@ -526,9 +523,9 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
         non_phase = fmap_file_types["fmri"]
         group["fmap_acq"] = "bold"
 
-    non_phase["direction"] = non_phase[
-        "file.info.header.dicom.SeriesDescription"
-    ].str.extract(r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)")[0]
+    non_phase["direction"] = non_phase["file.info.SeriesDescription"].str.extract(
+        r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)"
+    )[0]
 
     if non_phase["direction"].isnull().any():
         err_msg = "Subject %s has acquisition with 2 epis but no direction." % subject
@@ -559,64 +556,51 @@ def add_fmap(df: pd.DataFrame()):
     if fmap_df.empty:
         return df.reset_index(drop=True)
 
-    # check_unsupported removes subjects with fieldmaps until the port below is done.
-    return df.reset_index(drop=True)
+    subject = df["subject.label"].iloc[0]
 
-    # ------------------------------------------------------------------
-    # NEEDS PORT TO acq_df: everything below this early return is
-    # preserved as a reference for the file-level fmap classification
-    # logic. It still assumes the old data model (file.type / file.name /
-    # bval / bvec rows) and will fail at runtime under acq_df. Rewrite
-    # before removing the early return above.
-    # ------------------------------------------------------------------
     fmap_related_df = df[df["reproin"].str.startswith(("asl", "func", "dwi"), na=False)]
     if fmap_related_df.empty:
-        fmap_df["reproin"] += "_ignore-BIDS"
-        df.update(fmap_df)
+        df.loc[fmap_df.index, "reproin"] += "_ignore-BIDS"
         return df.reset_index(drop=True)
 
+    fmap_df = fmap_df.copy()
     fmap_df["reproin_dict"] = fmap_df["reproin"].apply(lambda x: parse_series_spec(x))
 
     # Determine fieldmap file types (magnitude, phase, etc.)
-    type_mapping = fmap_df.groupby("acquisition.id")[fmap_df.columns].apply(
-        lambda x: classify_fmap_acq(
-            x[x["file.type"] == "dicom"]["file.info.header.dicom.ImageType"].iloc[0]
-        )
-    )
-    if type_mapping.empty:
+    fmap_df["fmap_file_type"] = fmap_df["ImageType"].apply(classify_fmap_acq)
+    if fmap_df["fmap_file_type"].isna().all():
         err_msg = (
             "Subject %s doesn't contain any files with proper ImageType." % subject
         )
         log.error(err_msg)
         df.loc[:, "error"] = err_msg
         return df.reset_index(drop=True)
-    fmap_df["fmap_file_type"] = fmap_df["acquisition.id"].map(type_mapping)
-    fmap_df = fmap_df[
-        fmap_df["file.type"].apply(lambda x: x in ("nifti", "bval", "bvec"))
-    ]
-    fmap_df["magnitude_type"] = fmap_df["file.name"].apply(
-        lambda x: 1
-        if ("_e1.nii" in x or "_magnitude1.nii" in x)
-        else (2 if ("_e2.nii" in x or "_magnitude2.nii" in x) else None)
+
+    # One row per nifti, since the cases below count magnitude/phase files
+    fmap_df = (
+        fmap_df.explode("nifti_files")
+        .dropna(subset=["nifti_files"])
+        .reset_index(drop=True)
     )
+    fmap_df["file.name"] = fmap_df["nifti_files"].str["name"]
+    fmap_df["magnitude_type"] = fmap_df["nifti_files"].str["magnitude_type"]
 
     # Group acquisitions by timestamp
     fmap_df = timestamp_group(fmap_df, FMAP_DELTA)
     fmap_df["fmap_acq"] = None
-    fmap_df = fmap_df.set_index("file.file_id")
 
     # Determine bids fmap case and assign reproin labels
     for name, group in fmap_df.groupby("group"):
         if (
-            group.iloc[0]["acq_datetime"] - group.iloc[-1]["acq_datetime"]
+            group.iloc[-1]["acq_datetime"] - group.iloc[0]["acq_datetime"]
         ) > FMAP_DELTA:
             err_msg = "Fieldmap group in subject %s spans more than %s" % (
-                fmap_df.iloc[0]["subject.label"],
+                subject,
                 FMAP_DELTA,
             )
             log.error(err_msg)
-            group.loc[:, "error"] = err_msg
-            return group.reset_index(drop=True)
+            df.loc[:, "error"] = err_msg
+            return df.reset_index(drop=True)
         elif (
             group["reproin_dict"]
             .apply(
@@ -627,11 +611,10 @@ def add_fmap(df: pd.DataFrame()):
         ):
             continue
 
-        niftis = group[group["file.type"] == "nifti"]
-        magnitude = niftis[niftis["fmap_file_type"] == "magnitude"]
-        phase = niftis[niftis["fmap_file_type"] == "phase"]
-        diffusion = niftis[niftis["fmap_file_type"] == "diffusion"]
-        fmri = niftis[niftis["fmap_file_type"] == "fmri"]
+        magnitude = group[group["fmap_file_type"] == "magnitude"]
+        phase = group[group["fmap_file_type"] == "phase"]
+        diffusion = group[group["fmap_file_type"] == "diffusion"]
+        fmri = group[group["fmap_file_type"] == "fmri"]
         fmap_file_types = {
             "magnitude": magnitude,
             "phase": phase,
@@ -667,10 +650,12 @@ def add_fmap(df: pd.DataFrame()):
                 pattern = re.compile(
                     r"(?i)(spinecho|(^|[^a-zA-Z0-9])se($|[^a-zA-Z0-9])|(?-i:AP|PA))"
                 )
-                magnitude.loc[:, "spinecho"] = magnitude[
-                    "file.info.header.dicom.SeriesDescription"
-                ].str.match(pattern)
+                magnitude = magnitude.copy()
+                magnitude["spinecho"] = magnitude["file.info.SeriesDescription"].str.match(
+                    pattern
+                )
                 num_spinecho = len(magnitude[magnitude["spinecho"]])
+                series_desc = magnitude["file.info.SeriesDescription"]
 
                 if num_spinecho not in (0, len(magnitude)):
                     err_msg = (
@@ -680,20 +665,8 @@ def add_fmap(df: pd.DataFrame()):
                     log.error(err_msg)
                     group.loc[:, "error"] = err_msg
                 elif num_spinecho == len(magnitude) and (
-                    len(
-                        magnitude[
-                            magnitude[
-                                "file.info.header.dicom.SeriesDescription"
-                            ].str.contains("AP")
-                        ]
-                    )
-                    == len(
-                        magnitude[
-                            magnitude[
-                                "file.info.header.dicom.SeriesDescription"
-                            ].str.contains("PA")
-                        ]
-                    )
+                    series_desc.str.contains("AP").sum()
+                    == series_desc.str.contains("PA").sum()
                 ):
                     # Case 4
                     group = get_case_four(group, fmap_file_types, subject)
@@ -728,14 +701,16 @@ def add_fmap(df: pd.DataFrame()):
         .reset_index(level=0, drop=True)["reproin"]
     )
 
-    fmap_df = fmap_df.set_index("acquisition.id")
+    # Map per-nifti results back onto acquisitions
+    fmap_mapping = fmap_df.groupby("acquisition.id")[["reproin", "error"]].first()
     df = df.set_index("acquisition.id")
-    fmap_mapping = fmap_df.groupby(fmap_df.index).first()
-    fmap_mapping = fmap_mapping["reproin"]
-    fmap_mapping = fmap_mapping.dropna()
+    reproin_mapping = fmap_mapping["reproin"].dropna()
     df["reproin"] = df["reproin"].where(
-        ~df.index.isin(fmap_mapping.index), df.index.map(fmap_mapping)
+        ~df.index.isin(reproin_mapping.index), df.index.map(reproin_mapping)
     )
+    errors = fmap_mapping["error"][fmap_mapping["error"].fillna("") != ""]
+    if not errors.empty:
+        df.loc[errors.index, "error"] = errors
 
     return df.reset_index()
 
