@@ -990,6 +990,33 @@ def add_sbref(df: pd.DataFrame()):
     return df
 
 
+def check_classification(acq_df: pd.DataFrame) -> pd.DataFrame:
+    """Sets error for subjects with acquisitions whose classification Intent doesn't
+    match their reproin datatype, since curate-bids would silently skip them."""
+    acq_df = acq_df.copy()
+    expected = acq_df["reproin"].str.extract(r"^([a-z]+)")[0].map(
+        {"anat": "Structural", "dwi": "Structural", "func": "Functional", "fmap": "Fieldmap"}
+    )
+    is_mismatched = pd.Series(
+        [
+            isinstance(e, str) and not (isinstance(i, list) and e in i)
+            for e, i in zip(expected, acq_df["file.classification.Intent"])
+        ],
+        index=acq_df.index,
+        dtype=bool,
+    )
+    mismatched = acq_df[is_mismatched].groupby("subject.label")["acquisition.label"]
+    for subject, labels in mismatched:
+        err_msg = (
+            "Subject %s has acquisitions whose classification doesn't match their "
+            "reproin: %s" % (subject, labels.tolist())
+        )
+        log.error(err_msg)
+        acq_df.loc[acq_df["subject.label"] == subject, "error"] = err_msg
+
+    return acq_df
+
+
 def check_duplicate_reproin(df: pd.DataFrame()) -> pd.DataFrame():
     """Sets error if multiple acquisitions in the session share a reproin. Ignored
     acquisitions are skipped since they won't be bidsified."""

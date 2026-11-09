@@ -9,6 +9,7 @@ import time
 import pandas as pd
 from flywheel import ProjectOutput
 from utils.reproin import (
+    check_classification,
     check_pydeface,
     check_nifti_presence,
     check_nifti_count,
@@ -242,6 +243,7 @@ def classify(file_df: pd.DataFrame) -> pd.DataFrame:
         .apply(add_sbref)
         .reset_index(drop=True)
     )
+    acq_df = check_classification(acq_df)
 
     return pd.concat([acq_df, ignored_df], ignore_index=True)
 
