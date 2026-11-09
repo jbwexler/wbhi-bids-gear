@@ -4,7 +4,7 @@ from datetime import timedelta
 
 WAIT_TIMEOUT = 3600 * 2
 SBREF_DELTA = timedelta(seconds=40)
-FMAP_DELTA = timedelta(minutes=1)
+FMAP_DELTA = timedelta(minutes=2)
 REC_DELTA = timedelta(minutes=1)
 DATAVIEW_COLUMNS = {
     "subject.id": str,
