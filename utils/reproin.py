@@ -685,9 +685,12 @@ def add_fmap(df: pd.DataFrame()):
                     # Case 1
                     group["fmap_acq"] = "phasediff"
                 else:
-                    # Case 2
-                    group["fmap_acq"] = "twophase"
-                    group["reproin"] = "fmap-gre"
+                    # Case 2; curate-bids would name both phases phasediff
+                    # group["fmap_acq"] = "twophase"
+                    # group["reproin"] = "fmap-gre"
+                    err_msg = "Subject %s has two-phase fieldmaps." % subject
+                    log.error(err_msg)
+                    group.loc[:, "error"] = err_msg
             elif len(phase) == 0:
                 # Case 4
                 group = get_case_four(group, fmap_file_types, subject)
