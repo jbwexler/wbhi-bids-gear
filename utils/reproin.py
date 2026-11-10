@@ -329,7 +329,12 @@ def reproin_filter(row: pd.Series) -> str:
     # Utilize acq label if already in reproin format. Otherwise, create a reproin label
     label_re = re.sub(r"_\d$", "", label_lower)
     label_ignore = label + "_ignore-BIDS"
-    if label_re in IGNORE_SCANS or "t1_tse_lc" in label_lower:
+    # _RR series are non-normalized duplicates of the series acquired at the same time
+    if (
+        label_re in IGNORE_SCANS
+        or "t1_tse_lc" in label_lower
+        or re.search(r"_rr(_sbref)?$", label_re)
+    ):
         return label_ignore
     if label_lower.startswith("highreshippocampus"):
         return "anat-T2w_acq-hippocampus"
@@ -350,6 +355,8 @@ def reproin_filter(row: pd.Series) -> str:
         if validator["datatype"] not in ALLOWED_DATATYPES:
             return label_ignore
         if validator.get("datatype_suffix") == "scout":
+            return label_ignore
+        if validator["datatype"] == "dwi" and label_re.endswith(DWI_SUFFIXES_IGNORE):
             return label_ignore
         if validator["datatype"] == "func":
             task = validator.get("task", "")
