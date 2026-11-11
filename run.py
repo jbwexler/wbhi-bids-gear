@@ -49,6 +49,9 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
             log.info(f"Saving df as {PKL_PATH}.")
             file_df.to_pickle(PKL_PATH)
 
+    # wbhi-redcap tags sessions once it has verified the deid copy is complete. Unverified
+    # sessions are skipped, since renaming or moving them would make it copy them again.
+    file_df = file_df[file_df["session.tags"].apply(lambda x: "deid-verified" in x)]
     if file_df.empty:
         log.info("No subjects were found in deid project.")
         sys.exit(0)
