@@ -244,27 +244,31 @@ def check_bval_count(acq_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def check_unsupported(acq_df: pd.DataFrame, max_examples: int = 3) -> pd.DataFrame:
-    """Removes subjects that have any ASL/perfusion, spectroscopy, CSF flow, QSM or
-    neuromelanin acquisitions, which aren't supported yet, or any acquisitions without
-    an acquisition time. Logs the number of subjects skipped for each combination of
-    reasons, with up to max_examples examples."""
+    """Removes subjects that have any ASL/perfusion, spectroscopy, CSF or phase-contrast
+    flow, QSM, SWI, TOF angio or neuromelanin acquisitions, which aren't supported yet,
+    or any acquisitions without an acquisition time. Logs the number of subjects
+    skipped for each combination of reasons, with up to max_examples examples."""
     acq_df = acq_df.copy()
 
-    def has_intent(intent):
+    def has_class(field, value):
         return (
-            acq_df["file.classification.Intent"]
-            .apply(lambda x: isinstance(x, list) and intent in x)
+            acq_df["file.classification." + field]
+            .apply(lambda x: isinstance(x, list) and value in x)
             .astype(bool)
         )
 
+    def label_has(pattern):
+        return acq_df["acquisition.label"].str.contains(pattern, case=False, na=False)
+
     unsupported = {
         "ASL/perfusion": acq_df["reproin"].str.startswith("asl", na=False),
-        "spectroscopy": has_intent("Spectroscopy"),
+        "spectroscopy": has_class("Intent", "Spectroscopy"),
         "CSF flow": acq_df["acquisition.label"].str.startswith("csf_flow", na=False),
-        "QSM": has_intent("QSM"),
-        "neuromelanin": acq_df["acquisition.label"].str.contains(
-            "neuromelanin|t1_tse_lc", case=False, na=False
-        ),
+        "phase-contrast flow": label_has("ospcmri"),
+        "QSM": has_class("Intent", "QSM"),
+        "SWI": has_class("Features", "SWI"),
+        "TOF angio": label_has(r"(?:^|[_\s-])tof(?:[_\s-]|$)"),
+        "neuromelanin": label_has("neuromelanin|t1_tse_lc"),
         "no acquisition time": acq_df["acq_datetime"].isna()
         & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False),
     }
