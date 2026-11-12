@@ -245,9 +245,10 @@ def check_bval_count(acq_df: pd.DataFrame) -> pd.DataFrame:
 
 def check_unsupported(acq_df: pd.DataFrame, max_examples: int = 3) -> pd.DataFrame:
     """Removes subjects that have any ASL/perfusion, spectroscopy, CSF or phase-contrast
-    flow, QSM, SWI, TOF angio or neuromelanin acquisitions, which aren't supported yet,
-    or any acquisitions without an acquisition time. Logs the number of subjects
-    skipped for each combination of reasons, with up to max_examples examples."""
+    flow, QSM, SWI, TOF angio, neuromelanin or physio acquisitions, which aren't
+    supported yet, or any acquisitions without an acquisition time. Logs the number of
+    subjects skipped for each combination of reasons, with up to max_examples
+    examples."""
     acq_df = acq_df.copy()
 
     def has_class(field, value):
@@ -269,6 +270,7 @@ def check_unsupported(acq_df: pd.DataFrame, max_examples: int = 3) -> pd.DataFra
         "SWI": has_class("Features", "SWI"),
         "TOF angio": label_has(r"(?:^|[_\s-])tof(?:[_\s-]|$)"),
         "neuromelanin": label_has("neuromelanin|t1_tse_lc"),
+        "physio": label_has(r"physiolog|_pmu(?:_\d+)?$"),
         "no acquisition time": acq_df["acq_datetime"].isna()
         & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False),
     }
@@ -338,11 +340,13 @@ def reproin_filter(row: pd.Series) -> str:
     label_ignore = label + "_ignore-BIDS"
     # Phase images of complex-valued BOLD (e.g. for NORDIC); only magnitude is used
     is_phase = isinstance(row.get("ImageType"), list) and "P" in row["ImageType"]
-    # _RR series are non-normalized duplicates of the series acquired at the same time
+    # Physio series are blocked in check_unsupported; ignored here so they don't get a
+    # func/fmap/dwi label. _RR series are non-normalized duplicates of the series
+    # acquired at the same time
     if (
         label_re in IGNORE_SCANS
         or "t1_tse_lc" in label_lower
-        or label_re.endswith("physiolog")
+        or label_re.endswith(("physiolog", "_pmu"))
         or re.search(r"_rr(_sbref)?$", label_re)
     ):
         return label_ignore
