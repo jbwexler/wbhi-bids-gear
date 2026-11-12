@@ -336,14 +336,17 @@ def reproin_filter(row: pd.Series) -> str:
     # Utilize acq label if already in reproin format. Otherwise, create a reproin label
     label_re = re.sub(r"_\d$", "", label_lower)
     label_ignore = label + "_ignore-BIDS"
+    # Phase images of complex-valued BOLD (e.g. for NORDIC); only magnitude is used
+    is_phase = isinstance(row.get("ImageType"), list) and "P" in row["ImageType"]
     # _RR series are non-normalized duplicates of the series acquired at the same time
     if (
         label_re in IGNORE_SCANS
         or "t1_tse_lc" in label_lower
+        or label_re.endswith("physiolog")
         or re.search(r"_rr(_sbref)?$", label_re)
     ):
         return label_ignore
-    if label_lower.startswith("highreshippocampus"):
+    if "highreshippocampus" in label_lower:
         return "anat-T2w_acq-hippocampus"
 
     try:
@@ -366,7 +369,10 @@ def reproin_filter(row: pd.Series) -> str:
         if validator["datatype"] == "dwi" and label_re.endswith(DWI_SUFFIXES_IGNORE):
             return label_ignore
         if validator["datatype"] == "func":
-            task = validator.get("task", "")
+            if is_phase:
+                return label_ignore
+            # Labels like func-bold_resting have no task- entity, so it ends up in "bids"
+            task = validator.get("task") or validator.get("bids", "")
             if task and (
                 "rest" in task.lower()
                 or "rsfmri" in task.lower()
@@ -396,7 +402,7 @@ def reproin_filter(row: pd.Series) -> str:
         if label_lower.startswith("gobrain_"):
             return label_ignore
         elif label_re.endswith(
-            ("physiolog", "setter", "tensor", "tensor_b0", "neuromelanin")
+            ("setter", "tensor", "tensor_b0", "neuromelanin")
         ):
             return label_ignore
         elif intent and ("Localizer" in intent or "Spectroscopy" in intent):
@@ -422,6 +428,7 @@ def reproin_filter(row: pd.Series) -> str:
         elif (
             intent
             and "Functional" in intent
+            and not is_phase
             and label_lower
             and ("rest" in label_lower or "rsfmri" in label_lower)
         ):
