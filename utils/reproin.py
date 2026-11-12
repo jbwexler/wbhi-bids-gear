@@ -244,9 +244,9 @@ def check_bval_count(acq_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def check_unsupported(acq_df: pd.DataFrame, max_examples: int = 3) -> pd.DataFrame:
-    """Removes subjects that have any ASL/perfusion, spectroscopy, CSF flow or QSM
-    acquisitions, which aren't supported yet, or any acquisitions without an
-    acquisition time. Logs the number of subjects skipped for each combination of
+    """Removes subjects that have any ASL/perfusion, spectroscopy, CSF flow, QSM or
+    neuromelanin acquisitions, which aren't supported yet, or any acquisitions without
+    an acquisition time. Logs the number of subjects skipped for each combination of
     reasons, with up to max_examples examples."""
     acq_df = acq_df.copy()
 
@@ -262,6 +262,9 @@ def check_unsupported(acq_df: pd.DataFrame, max_examples: int = 3) -> pd.DataFra
         "spectroscopy": has_intent("Spectroscopy"),
         "CSF flow": acq_df["acquisition.label"].str.startswith("csf_flow", na=False),
         "QSM": has_intent("QSM"),
+        "neuromelanin": acq_df["acquisition.label"].str.contains(
+            "neuromelanin|t1_tse_lc", case=False, na=False
+        ),
         "no acquisition time": acq_df["acq_datetime"].isna()
         & ~acq_df["reproin"].str.endswith("_ignore-BIDS", na=False),
     }
