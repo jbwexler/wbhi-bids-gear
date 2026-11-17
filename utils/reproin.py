@@ -352,6 +352,11 @@ def reproin_filter(row: pd.Series) -> str:
         return label_ignore
     if "highreshippocampus" in label_lower:
         return "anat-T2w_acq-hippocampus"
+    # UCSF resting-state BOLD; the _PA series is a single reverse-PE volume
+    if label_re == "cmrr_bold_2.2mm_mb6":
+        return "func_task-rest_dir-AP"
+    if label_re == "cmrr_bold_2.2mm_mb6_sbref":
+        return "sbref"
 
     try:
         # '-run-' isn't valid reproin; heudiconv would fold it into the previous entity
