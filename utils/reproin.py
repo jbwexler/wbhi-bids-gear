@@ -517,19 +517,6 @@ def get_runs(df: pd.DataFrame) -> pd.DataFrame:
     return run_df
 
 
-def add_fmap_runs(df: pd.DataFrame()) -> pd.DataFrame():
-    df = df.copy()
-    group_df = df[["acq_datetime", "group"]].drop_duplicates(
-        subset="group", keep="first"
-    )
-    if len(group_df) > 1:
-        group_mapping = get_runs(group_df).set_index("group")
-        df["run"] = df["group"].map(group_mapping["run"])
-        df["reproin"] = df["reproin"] + "_run-" + df["run"]
-
-    return df
-
-
 def timestamp_group(df: pd.DataFrame, delta: timedelta) -> pd.DataFrame:
     """Groups rows in a dataframe that fall within a time delta. Returns a df with
     added 'time_diff' and 'group' columns"""
@@ -551,14 +538,10 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
             log.error(err_msg)
             group.loc[:, "error"] = err_msg
             return group
-
-        group["fmap_acq"] = "dwi"
     elif not fmap_file_types["magnitude"].empty:
         non_phase = fmap_file_types["magnitude"]
-        group["fmap_acq"] = "bold"
     elif not fmap_file_types["fmri"].empty:
         non_phase = fmap_file_types["fmri"]
-        group["fmap_acq"] = "bold"
 
     non_phase["direction"] = non_phase["file.info.SeriesDescription"].str.extract(
         r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)"
@@ -578,7 +561,11 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
     reproin_mapping = non_phase.groupby("acquisition.id")[non_phase.columns].apply(
         lambda x: "fmap-epi_dir-" + x["direction"].iloc[0]
     )
+    # BIDS epi fieldmaps have no phase image
+    is_phase = group["fmap_file_type"] == "phase"
+    phase_reproin = group.loc[is_phase, "reproin"] + "_ignore-BIDS"
     group.loc[:, "reproin"] = group["acquisition.id"].map(reproin_mapping)
+    group.loc[is_phase, "reproin"] = phase_reproin
 
     return group
 
@@ -600,8 +587,25 @@ def add_fmap(df: pd.DataFrame()):
         df.loc[fmap_df.index, "reproin"] += "_ignore-BIDS"
         return df.reset_index(drop=True)
 
+    df["fmap_group"] = None
+    df["fmap_file_type"] = None
     fmap_df = fmap_df.copy()
     fmap_df["reproin_dict"] = fmap_df["reproin"].apply(lambda x: parse_series_spec(x))
+
+    # The file type below comes from one nifti per acquisition, so an acquisition
+    # with both magnitude and phase niftis would be misclassified
+    is_mixed = fmap_df["nifti_files"].apply(
+        lambda files: {"magnitude", "phase"}
+        <= {classify_fmap_acq(f["ImageType"]) for f in files}
+    )
+    if is_mixed.any():
+        err_msg = (
+            "Subject %s has fieldmap acquisitions with both magnitude and phase files: %s"
+            % (subject, fmap_df.loc[is_mixed, "acquisition.label"].tolist())
+        )
+        log.error(err_msg)
+        df.loc[:, "error"] = err_msg
+        return df.reset_index(drop=True)
 
     # Determine fieldmap file types (magnitude, phase, etc.)
     fmap_df["fmap_file_type"] = fmap_df["ImageType"].apply(classify_fmap_acq)
@@ -624,7 +628,6 @@ def add_fmap(df: pd.DataFrame()):
 
     # Group acquisitions by timestamp
     fmap_df = timestamp_group(fmap_df, FMAP_DELTA)
-    fmap_df["fmap_acq"] = None
 
     # Determine bids fmap case and assign reproin labels
     for name, group in fmap_df.groupby("group"):
@@ -646,6 +649,13 @@ def add_fmap(df: pd.DataFrame()):
             )
             .all()
         ):
+            # BIDS epi fieldmaps have no phase image
+            is_epi_phase = (group["fmap_file_type"] == "phase") & group[
+                "reproin_dict"
+            ].apply(lambda x: x.get("datatype_suffix") == "epi")
+            if is_epi_phase.any():
+                group.loc[is_epi_phase, "reproin"] += "_ignore-BIDS"
+                fmap_df.update(group)
             continue
 
         magnitude = group[group["fmap_file_type"] == "magnitude"]
@@ -716,10 +726,9 @@ def add_fmap(df: pd.DataFrame()):
                     group.loc[:, "error"] = err_msg
                 elif len(phase) == 1:
                     # Case 1
-                    group["fmap_acq"] = "phasediff"
+                    pass
                 else:
                     # Case 2; curate-bids would name both phases phasediff
-                    # group["fmap_acq"] = "twophase"
                     # group["reproin"] = "fmap-gre"
                     err_msg = "Subject %s has two-phase fieldmaps." % subject
                     log.error(err_msg)
@@ -733,17 +742,15 @@ def add_fmap(df: pd.DataFrame()):
 
         fmap_df.update(group)
 
-    if fmap_df["fmap_acq"].nunique() > 1:
-        fmap_df["reproin"] += "_acq-" + fmap_df["fmap_acq"]
-    fmap_df["reproin"] = (
-        fmap_df.groupby("fmap_acq")[fmap_df.columns]
-        .apply(add_fmap_runs)
-        .reset_index(level=0, drop=True)["reproin"]
-    )
-
-    # Map per-nifti results back onto acquisitions
-    fmap_mapping = fmap_df.groupby("acquisition.id")[["reproin", "error"]].first()
+    # Map per-nifti results back onto acquisitions. fmap_group and fmap_file_type are
+    # used by add_run so that acquisitions from the same fieldmap (e.g. magnitude and
+    # phase) share a run but get distinct labels
+    fmap_mapping = fmap_df.groupby("acquisition.id")[
+        ["reproin", "error", "group", "fmap_file_type"]
+    ].first()
     df = df.set_index("acquisition.id")
+    df["fmap_group"] = df.index.map(fmap_mapping["group"])
+    df["fmap_file_type"] = df.index.map(fmap_mapping["fmap_file_type"])
     reproin_mapping = fmap_mapping["reproin"].dropna()
     df["reproin"] = df["reproin"].where(
         ~df.index.isin(reproin_mapping.index), df.index.map(reproin_mapping)
@@ -906,8 +913,36 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
     if run_df.shape[0] > 1:
         run_df = get_runs(run_df)
 
-        if run_df["reproin"].iloc[[0]].str.startswith("fmap").item():
-            run_df["reproin"] = run_df["reproin"] + "_" + run_df["run"]
+        if run_df["reproin"].iloc[0].startswith("fmap"):
+            # Fieldmaps are numbered by add_fmap's timestamp group rather than by
+            # acquisition, so e.g. a magnitude and its phase share a run
+            if run_df["fmap_group"].nunique() > 1:
+                group_runs = get_runs(
+                    run_df.drop_duplicates(subset="fmap_group").drop(columns="run")
+                ).set_index("fmap_group")["run"]
+                run_df["reproin"] = (
+                    run_df["reproin"] + "_run-" + run_df["fmap_group"].map(group_runs)
+                )
+            # Acquisitions in a session can't share a label, so a magnitude and phase
+            # in separate acquisitions get a _mag/_phase suffix, which curate-bids
+            # ignores since it takes the BIDS suffix from the nifti filenames
+            is_dup = run_df["reproin"].duplicated(keep=False)
+            if is_dup.any():
+                dups = run_df[is_dup]
+                if dups.duplicated(["reproin", "fmap_file_type"]).any() or not dups[
+                    "fmap_file_type"
+                ].isin(("magnitude", "phase")).all():
+                    err_msg = (
+                        "Subject %s has fieldmap acquisitions that can't be told "
+                        "apart: %s"
+                        % (df["subject.label"].iloc[0], dups["acquisition.label"].tolist())
+                    )
+                    log.error(err_msg)
+                    df.loc[:, "error"] = err_msg
+                    return df
+                run_df.loc[is_dup, "reproin"] += dups["fmap_file_type"].map(
+                    {"magnitude": "_mag", "phase": "_phase"}
+                )
         else:
             unique_df = run_df.apply(get_acq_params, axis=1)
 
