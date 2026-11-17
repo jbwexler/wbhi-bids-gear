@@ -399,7 +399,12 @@ def reproin_filter(row: pd.Series) -> str:
         if validator.get("task") and validator["task"] != "None":
             new_label += "_task-" + validator["task"]
         if validator.get("acq") and validator["acq"] != "None":
-            new_label += "_acq-" + validator["acq"]
+            acq = validator["acq"]
+            # Site-named copy of the ADNI3 HighResHippocampus protocol labeled
+            # acq-hippocampus elsewhere
+            if acq.lower() == "adni3hippocampus":
+                acq = "hippocampus"
+            new_label += "_acq-" + acq
         if validator["datatype"] in ("func", "dwi", "fmap"):
             new_label = _add_dir(new_label, label)
         return new_label
