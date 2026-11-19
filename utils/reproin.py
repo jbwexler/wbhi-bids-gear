@@ -423,6 +423,9 @@ def reproin_filter(row: pd.Series) -> str:
             return label_ignore
         elif label_lower.startswith(("se_distortion", "abcd_topup")):
             return _add_dir("fmap", label)
+        # Short reverse-PE DWI series used for distortion correction
+        elif "short_fm" in label_lower:
+            return _add_dir("fmap", label)
         elif measurement and "Perfusion" in measurement:
             return "asl"
         elif intent and "Structural" in intent:
