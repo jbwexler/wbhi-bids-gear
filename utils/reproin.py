@@ -404,7 +404,9 @@ def reproin_filter(row: pd.Series) -> str:
             # acq-hippocampus elsewhere
             if acq.lower() == "adni3hippocampus":
                 acq = "hippocampus"
-            new_label += "_acq-" + acq
+            # Vendor name some sites put in fieldmap labels; it doesn't distinguish anything
+            if acq.lower() != "siemens":
+                new_label += "_acq-" + acq
         if validator["datatype"] in ("func", "dwi", "fmap"):
             new_label = _add_dir(new_label, label)
         return new_label
