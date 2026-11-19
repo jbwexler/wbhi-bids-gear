@@ -53,18 +53,25 @@ def get_subjects(project: ProjectOutput) -> pd.DataFrame:
     # sessions are skipped, since renaming or moving them would make it copy them again.
     file_df = file_df[file_df["session.tags"].apply(lambda x: "deid-verified" in x)]
     if file_df.empty:
-        log.info("No subjects were found in deid project.")
+        log.info("No subjects were found in %s project." % project.label)
         sys.exit(0)
     log.info(
-        "Found %d subjects (%d acquisitions) in deid project."
-        % (file_df["subject.id"].nunique(), file_df["acquisition.id"].nunique())
+        "Found %d subjects (%d acquisitions) in %s project."
+        % (
+            file_df["subject.id"].nunique(),
+            file_df["acquisition.id"].nunique(),
+            project.label,
+        )
     )
 
-    bidsified_sessions = file_df[
-        file_df["session.tags"].apply(lambda x: "bidsified" in x)
-    ]["session.id"].unique()
-    for session_id in bidsified_sessions:
-        client.get_session(session_id).delete_tag("bidsified")
+    # In staging, sessions keep their tag from the earlier curation unless their new
+    # curate-bids job fails
+    if not config.get("staging_mode"):
+        bidsified_sessions = file_df[
+            file_df["session.tags"].apply(lambda x: "bidsified" in x)
+        ]["session.id"].unique()
+        for session_id in bidsified_sessions:
+            client.get_session(session_id).delete_tag("bidsified")
 
     file_df["sbref"] = None
     file_df["error"] = ""
@@ -405,8 +412,10 @@ def main():
     else:
         group = "wbhi"
 
-    deid_project = client.lookup(f"{group}/deid")
-    file_df = get_subjects(deid_project)
+    src_project = client.lookup(
+        f"{group}/staging" if config.get("staging_mode") else f"{group}/deid"
+    )
+    file_df = get_subjects(src_project)
     rename_sessions(file_df)
 
     file_df = classify(file_df)
@@ -416,8 +425,9 @@ def main():
     jobs = wait_for_jobs(job_ids)
     tag_and_email(jobs)
 
-    staging_project = client.lookup(f"{group}/staging")
-    mv_bidsified(deid_project, staging_project)
+    if not config.get("staging_mode"):
+        staging_project = client.lookup(f"{group}/staging")
+        mv_bidsified(src_project, staging_project)
 
 
 if __name__ == "__main__":
