@@ -320,11 +320,11 @@ def add_reproin(file_df: pd.DataFrame) -> pd.DataFrame:
     return file_df
 
 
-def submit_bids_jobs(file_df: pd.DataFrame()) -> list[str]:
+def submit_bids_jobs(subject_ids) -> list[str]:
     """Submits a curate-bids job for each subject. Returns the job ids."""
     curate_bids_gear = client.lookup("gears/curate-bids")
     job_ids = []
-    for sub_id in file_df["subject.id"].unique():
+    for sub_id in subject_ids:
         subject = client.get_subject(sub_id)
         job_id = run_gear(curate_bids_gear, {}, {"reset": True}, subject)
         if job_id:
@@ -421,8 +421,15 @@ def main():
     file_df = classify(file_df)
     file_df = add_reproin(file_df)
 
-    job_ids = submit_bids_jobs(file_df)
+    job_ids = submit_bids_jobs(file_df["subject.id"].unique())
     jobs = wait_for_jobs(job_ids)
+
+    # curate-bids jobs often fail intermittently and complete on a second try
+    failed = [job for job in jobs if job.state == "failed"]
+    if failed:
+        log.info("Retrying %d failed curate-bids jobs." % len(failed))
+        retried = wait_for_jobs(submit_bids_jobs([job.parents.subject for job in failed]))
+        jobs = [job for job in jobs if job.state != "failed"] + retried
     tag_and_email(jobs)
 
     if not config.get("staging_mode"):
