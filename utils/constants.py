@@ -40,6 +40,7 @@ DATAVIEW_COLUMNS = {
     "file.info.header.nifti.dim.1": int,
     "file.info.header.nifti.dim.2": int,
     "file.info.header.nifti.dim.3": int,
+    "file.info.header.nifti.pixdim": list,
     "file.info.header.dicom.SeriesDescription": str,
     "file.info.header.dicom.ImageType": list,
     "file.classification.Intent": list,

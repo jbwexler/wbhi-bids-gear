@@ -522,6 +522,93 @@ def get_runs(df: pd.DataFrame) -> pd.DataFrame:
     return run_df
 
 
+def _geometry(row: pd.Series):
+    """Returns an acquisition's nifti matrix and in-plane voxel size, or None if
+    unknown. Slice spacing isn't used since it's unreliable in some fieldmaps."""
+    pixdim = row.get("file.info.header.nifti.pixdim")
+    shape = tuple(row.get("file.info.header.nifti.dim.%d" % i) for i in (1, 2, 3))
+    if not isinstance(pixdim, list) or len(pixdim) < 3:
+        return None
+    if any(pd.isna(n) for n in shape):
+        return None
+    return tuple(int(n) for n in shape), [abs(v) for v in pixdim[1:3]]
+
+
+def _same_geometry(a, b) -> bool:
+    return (
+        a is not None
+        and b is not None
+        and a[0] == b[0]
+        and all(abs(x - y) <= 0.02 for x, y in zip(a[1], b[1]))
+    )
+
+
+def _closest_in_time(times: dict, acq_datetime) -> list:
+    """Returns the fieldmap groups with an acquisition nearest to acq_datetime, or
+    none if times are unknown."""
+    gaps = {name: (t - acq_datetime).abs().min() for name, t in times.items()}
+    gaps = {name: gap for name, gap in gaps.items() if pd.notna(gap)}
+    if not gaps:
+        return []
+    closest = min(gaps.values())
+    return [name for name, gap in gaps.items() if gap == closest]
+
+
+def match_fmaps(df: pd.DataFrame, fmap_df: pd.DataFrame) -> pd.DataFrame:
+    """For each kept scan in the session that fieldmaps can correct, keeps the epi and
+    gre fieldmap groups that best match it: those sharing its matrix and in-plane voxel
+    size, else those whose type suits its datatype (gre suits bold), else any. Among
+    those, only the ones acquired closest to it are kept, or all if times are unknown.
+    Sets fmap_acq of epi groups from the datatypes they were kept for, and ignores
+    groups no scan kept."""
+    fmap_df = fmap_df.copy()
+    match_df = fmap_df[fmap_df["fmap_acq"].notna() | fmap_df["is_gre"]]
+    if match_df.empty:
+        return fmap_df
+
+    grouped = match_df.groupby("group")
+    types = {
+        name: "gre" if group["is_gre"].iloc[0] else group["fmap_acq"].iloc[0]
+        for name, group in grouped
+    }
+    geos = {name: _geometry(group.iloc[0]) for name, group in grouped}
+    times = {name: group["acq_datetime"] for name, group in grouped}
+
+    datatype_acqs = {"func": "bold", "dwi": "dwi", "asl": "asl"}
+    targets = df[
+        df["reproin"].str.startswith(tuple(datatype_acqs), na=False)
+        & ~df["reproin"].str.contains("sbref", case=False, na=False)
+    ]
+
+    kept_for = {name: set() for name in types}
+    for _, row in targets.iterrows():
+        acq = datatype_acqs[row["reproin"].split("-")[0].split("_")[0]]
+        geo = _geometry(row)
+        suits = {acq, "gre"} if acq == "bold" else {acq}
+        tiers = (
+            [n for n, g in geos.items() if _same_geometry(g, geo)],
+            [n for n, t in types.items() if t in suits],
+            list(types),
+        )
+        candidates = next(tier for tier in tiers if tier)
+        closest = _closest_in_time(
+            {n: times[n] for n in candidates}, row["acq_datetime"]
+        )
+        for name in closest or candidates:
+            kept_for[name].add(acq)
+
+    for name, group_index in grouped.groups.items():
+        acqs = kept_for[name]
+        if len(acqs) == 1 and types[name] != "gre":
+            fmap_df.loc[group_index, "fmap_acq"] = acqs.pop()
+        elif not acqs:
+            is_kept = ~fmap_df.loc[group_index, "reproin"].str.endswith("_ignore-BIDS")
+            fmap_df.loc[group_index[is_kept], "reproin"] += "_ignore-BIDS"
+            fmap_df.loc[group_index, "fmap_acq"] = None
+
+    return fmap_df
+
+
 def timestamp_group(df: pd.DataFrame, delta: timedelta) -> pd.DataFrame:
     """Groups rows in a dataframe that fall within a time delta. Returns a df with
     added 'time_diff' and 'group' columns"""
@@ -543,10 +630,14 @@ def get_case_four(group: pd.DataFrame(), fmap_file_types: dict, subject: str):
             log.error(err_msg)
             group.loc[:, "error"] = err_msg
             return group
+
+        group["fmap_acq"] = "dwi"
     elif not fmap_file_types["magnitude"].empty:
         non_phase = fmap_file_types["magnitude"]
+        group["fmap_acq"] = "bold"
     elif not fmap_file_types["fmri"].empty:
         non_phase = fmap_file_types["fmri"]
+        group["fmap_acq"] = "bold"
 
     non_phase["direction"] = non_phase["file.info.SeriesDescription"].str.extract(
         r".*(LR|RL|AP|PA)(?=[^a-zA-Z0-9]|$)"
@@ -633,6 +724,8 @@ def add_fmap(df: pd.DataFrame()):
 
     # Group acquisitions by timestamp
     fmap_df = timestamp_group(fmap_df, FMAP_DELTA)
+    fmap_df["fmap_acq"] = None
+    fmap_df["is_gre"] = False
 
     # Determine bids fmap case and assign reproin labels
     for name, group in fmap_df.groupby("group"):
@@ -731,7 +824,7 @@ def add_fmap(df: pd.DataFrame()):
                     group.loc[:, "error"] = err_msg
                 elif len(phase) == 1:
                     # Case 1
-                    pass
+                    group["is_gre"] = True
                 else:
                     # Case 2; curate-bids would name both phases phasediff
                     # group["reproin"] = "fmap-gre"
@@ -746,6 +839,16 @@ def add_fmap(df: pd.DataFrame()):
             group = get_case_four(group, fmap_file_types, subject)
 
         fmap_df.update(group)
+
+    fmap_df = match_fmaps(df, fmap_df)
+
+    # Fieldmaps for different targets (e.g. dwi and bold) would otherwise share a
+    # label and be numbered as runs of one another
+    if fmap_df["fmap_acq"].nunique() > 1:
+        has_acq = fmap_df["fmap_acq"].notna() & ~fmap_df["reproin"].str.endswith(
+            "_ignore-BIDS"
+        )
+        fmap_df.loc[has_acq, "reproin"] += "_acq-" + fmap_df.loc[has_acq, "fmap_acq"]
 
     # Map per-nifti results back onto acquisitions. fmap_group and fmap_file_type are
     # used by add_run so that acquisitions from the same fieldmap (e.g. magnitude and
@@ -910,9 +1013,61 @@ def get_acq_params(row: pd.Series) -> pd.Series:
     return pd.Series(result)
 
 
+def _acq_params_error(run_df: pd.DataFrame, subject: str, reproin: str) -> str:
+    """Returns an error message if runs are missing acquisition parameters or don't
+    all share them, otherwise an empty string."""
+    unique_df = run_df.apply(get_acq_params, axis=1)
+
+    unique_req_df = unique_df[
+        [c for c in unique_df.columns if c not in OPTIONAL_ACQ_PARAMS]
+    ]
+    empty_mask = unique_req_df.map(_is_empty)
+    missing_cols = empty_mask.columns[empty_mask.any()].tolist()
+    if missing_cols:
+        return "Subject %s is missing acquisition parameters for %s: %s" % (
+            subject,
+            reproin,
+            _describe_missing_params(
+                run_df["acquisition.label"], empty_mask, missing_cols
+            ),
+        )
+
+    unique_df = unique_df.apply(
+        lambda col: col.map(lambda x: tuple(x) if isinstance(x, list) else x)
+    )
+    if len(unique_df.drop_duplicates()) > 1:
+        return (
+            "Subject %s has runs with mismatched acquisition parameters for %s: %s"
+            % (
+                subject,
+                reproin,
+                _group_mismatched_runs(run_df["acquisition.label"], unique_df),
+            )
+        )
+    return ""
+
+
 def add_run(df: pd.DataFrame) -> pd.DataFrame:
     skip_df = df[df["file.info.SeriesDescription"].str.contains("sbref", case=False)]
     run_df = df[~df["acquisition.id"].isin(skip_df["acquisition.id"])]
+    subject = df["subject.label"].iloc[0]
+    reproin = df["reproin"].iloc[0]
+
+    # Acquisitions sharing a label must share parameters. Fieldmap phase images are
+    # compared separately, since they differ from their magnitude in ImageType. SBRefs
+    # are compared with each other but numbered by add_sbref
+    if reproin.startswith("fmap"):
+        is_phase = run_df["fmap_file_type"] == "phase"
+        check_dfs = [run_df[~is_phase], run_df[is_phase]]
+    else:
+        check_dfs = [run_df]
+    for check_df in check_dfs + [skip_df]:
+        if check_df.shape[0] > 1:
+            err_msg = _acq_params_error(check_df, subject, reproin)
+            if err_msg:
+                log.error(err_msg)
+                df.loc[:, "error"] = err_msg
+                return df
 
     # TODO: Handle recs properly (make sure rec pairs get same run number)
     if run_df.shape[0] > 1:
@@ -940,7 +1095,7 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
                     err_msg = (
                         "Subject %s has fieldmap acquisitions that can't be told "
                         "apart: %s"
-                        % (df["subject.label"].iloc[0], dups["acquisition.label"].tolist())
+                        % (subject, dups["acquisition.label"].tolist())
                     )
                     log.error(err_msg)
                     df.loc[:, "error"] = err_msg
@@ -949,44 +1104,6 @@ def add_run(df: pd.DataFrame) -> pd.DataFrame:
                     {"magnitude": "_mag", "phase": "_phase"}
                 )
         else:
-            unique_df = run_df.apply(get_acq_params, axis=1)
-
-            subject = df["subject.label"].iloc[0]
-            reproin = df["reproin"].iloc[0]
-
-            unique_req_df = unique_df[
-                [c for c in unique_df.columns if c not in OPTIONAL_ACQ_PARAMS]
-            ]
-            empty_mask = unique_req_df.map(_is_empty)
-            missing_cols = empty_mask.columns[empty_mask.any()].tolist()
-            if missing_cols:
-                err_msg = "Subject %s is missing acquisition parameters for %s: %s" % (
-                    subject,
-                    reproin,
-                    _describe_missing_params(
-                        run_df["acquisition.label"], empty_mask, missing_cols
-                    ),
-                )
-                log.error(err_msg)
-                df.loc[:, "error"] = err_msg
-                return df
-
-            unique_df = unique_df.apply(
-                lambda col: col.map(lambda x: tuple(x) if isinstance(x, list) else x)
-            )
-            if len(unique_df.drop_duplicates()) > 1:
-                err_msg = (
-                    "Subject %s has runs with mismatched acquisition parameters for %s: %s"
-                    % (
-                        subject,
-                        reproin,
-                        _group_mismatched_runs(run_df["acquisition.label"], unique_df),
-                    )
-                )
-                log.error(err_msg)
-                df.loc[:, "error"] = err_msg
-                return df
-
             run_df["reproin"] = run_df["reproin"] + "_run-" + run_df["run"]
 
     return pd.concat([run_df, skip_df])
